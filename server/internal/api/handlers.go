@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/s0hamjain/Clarity/server/internal/config"
 	"github.com/s0hamjain/Clarity/server/internal/jobs"
@@ -42,10 +43,28 @@ type Server struct {
 	cache    jobs.CacheStore
 	pipeline Pipeline
 	health   *Health
+
+	// render is P2's render.Render (FRD §14.1), or the fake until it lands.
+	render RenderFunc
+	// renderSem bounds concurrent `docker run`s across every job (rule 15).
+	// P2's render.Semaphore replaces this channel in Sprint 3; it is one
+	// instance shared by the whole process either way.
+	renderSem chan struct{}
+	// renderWait is how long a render may queue for a slot. Tests shorten it.
+	renderWait time.Duration
 }
 
-func NewServer(cfg *config.Config, j jobs.Store, c jobs.CacheStore, p Pipeline, h *Health) *Server {
-	return &Server{cfg: cfg, jobs: j, cache: c, pipeline: p, health: h}
+func NewServer(cfg *config.Config, j jobs.Store, c jobs.CacheStore, p Pipeline, h *Health, renderFn RenderFunc) *Server {
+	return &Server{
+		cfg:        cfg,
+		jobs:       j,
+		cache:      c,
+		pipeline:   p,
+		health:     h,
+		render:     renderFn,
+		renderSem:  make(chan struct{}, cfg.RenderConcurrency),
+		renderWait: semaphoreWait,
+	}
 }
 
 // Routes returns the handler for the whole service — the paths of API.md §2,
@@ -57,6 +76,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{job_id}", s.cancelJob)
 	mux.HandleFunc("GET /api/cache/{problem_hash}", s.getCache)
 	mux.HandleFunc("GET /healthz", s.healthz)
+	mux.HandleFunc("POST /internal/render", s.internalRender)
 
 	// Anything else is a 404 in the error envelope, not net/http's bare text.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

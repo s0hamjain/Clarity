@@ -139,10 +139,14 @@ server/
     │   ├── errors.go               # The one error envelope + the code constants — API.md §4
     │   ├── health.go               # Cached dependency checks behind /healthz; refreshed at boot and every 60 s
     │   ├── cors.go                 # Access-Control-Allow-Origin: * on every route incl. 404/5xx; X-Request-Id echo/generate
-    │   └── handlers_test.go        # Status codes, the error envelope, CORS, and the exact GET /api/jobs/{id} field set
+    │   ├── fake_render.go          # Stands in for P2's render.Render until it lands. Deleted in Sprint 4.
+    │   ├── handlers_test.go        # Status codes, the error envelope, CORS, and the exact GET /api/jobs/{id} field set
+    │   └── internal_render_test.go # Loopback-only; precheck gate; work_dir containment; semaphore 429
     │
     ├── config/                     # P3 · env → Config (FRD §22), read once at boot
-    │   └── config.go               # Defaults, validation; UsesAtlas(); the FAKE_AGENT / FAKE_RENDER flags
+    │   ├── config.go               # Defaults, validation; UsesAtlas(); the FAKE_AGENT / FAKE_RENDER flags
+    │   ├── dotenv.go               # Reads server/.env, as SETUP §9 assumes; the real environment wins
+    │   └── dotenv_test.go          # Parsing rules; environment beats file; a missing file is fine
     │
     ├── store/                      # P3 · MongoDB Atlas; implements the interfaces in jobs/store.go
     │   ├── mongo.go                # Client, database handle, Ping for /healthz
@@ -156,15 +160,17 @@ server/
     │   └── key_test.go             # Multi-line/tab/case input; guardrails true vs false must differ
     │
     ├── agent/                      # P3
-    │   └── client.go               # Typed HTTP client for FRD §10; strips data-URL prefix; per-endpoint timeouts
+    │   ├── client.go               # Typed HTTP client for API.md §3; strips data-URL prefix; per-endpoint timeouts
+    │   └── client_test.go          # Request/response shapes; both error-envelope shapes; cancellation
     │
     ├── jobs/                       # P3
     │   ├── job.go                  # Job struct = FRD §9.1; status enum; RFC 3339 wire shape
     │   ├── store.go                # The Store / CacheStore interfaces the worker consumes; store/ implements them
     │   ├── worker.go               # vision → hash → cache? → explain → write explanation → fan out → concat → upload → done
     │   ├── scenes.go               # Per-scene work_dir + goroutine calling agent POST /scenes/render; defer recover(); scenes_done
-    │   ├── fake.go                 # Hardcoded /vision and /explain stand-ins for FAKE_AGENT. Deleted in Sprint 4.
-    │   └── worker_test.go          # The status walk; rule 8 ordering; rule 10 (no cache on a failure path); cancel
+    │   ├── fake.go                 # Canned /vision and /explain answers + the fake clip writer. Deleted in Sprint 4.
+    │   ├── worker_test.go          # The status walk; rule 8 ordering; rule 10 (no cache on a failure path); cancel
+    │   └── pipeline_test.go        # The real path against a stand-in agent: unknown, cache hit, agent down, dropped scenes
     │
     └── render/                     # P2 · the boundary with P3 is Render / Concat / Semaphore in FRD §14.1
         ├── precheck.go             # python ast.parse; banned imports/calls; requires class GeneratedScene(Scene)

@@ -23,6 +23,7 @@ type errorBody struct {
 // Error codes from API.md §4 that the coordinator can emit.
 const (
 	CodeBadRequest           = "bad_request"
+	CodeForbidden            = "forbidden"
 	CodeJobNotFound          = "job_not_found"
 	CodeCacheMiss            = "cache_miss"
 	CodeImageTooLarge        = "image_too_large"

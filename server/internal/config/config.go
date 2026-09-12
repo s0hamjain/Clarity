@@ -64,10 +64,13 @@ func Load() (*Config, error) {
 		FakeVideoURL:      env("FAKE_VIDEO_URL", "http://localhost:9000/clarity-renders/samples/sample.mp4"),
 	}
 
-	// The in-memory store only exists to keep the fake pipeline runnable with no
-	// dependencies at all. Anything real must be backed by Atlas.
-	if c.MongoURI == "" && !(c.FakeAgent && c.FakeRender) {
-		return nil, fmt.Errorf("MONGODB_URI is required unless both FAKE_AGENT and FAKE_RENDER are on")
+	// The in-memory store is a development convenience, so it is available to
+	// any faked configuration — including "real agent, fake render", which is
+	// how the pipeline is exercised against P1 before Atlas is needed. A fully
+	// real run always persists, and once the flags are deleted in Sprint 4 this
+	// becomes an unconditional requirement.
+	if c.MongoURI == "" && !c.FakeAgent && !c.FakeRender {
+		return nil, fmt.Errorf("MONGODB_URI is required when both FAKE_AGENT and FAKE_RENDER are off")
 	}
 	if c.ManimQuality != "-ql" && c.ManimQuality != "-qm" {
 		return nil, fmt.Errorf("MANIM_QUALITY must be -ql or -qm, got %q", c.ManimQuality)
