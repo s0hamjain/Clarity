@@ -1,0 +1,23 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# go
+server/bin/
+
+# manim + render output
+media/
+renders/
+server/renders/
+*.mp4
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
