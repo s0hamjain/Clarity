@@ -3,8 +3,7 @@
 Hit a hotkey on a hard problem in your browser. Get a step-by-step explanation
 in seconds and a custom animated video a minute later.
 
-**Read [AGENTS.md](AGENTS.md) first.** It's the index and the clock for
-everything.
+**Read [AGENTS.md](AGENTS.md) first.** It's the index for everything.
 
 - [CONTRACTS.md](CONTRACTS.md) — the shapes
 - [docs/SETUP.md](docs/SETUP.md) — get it running

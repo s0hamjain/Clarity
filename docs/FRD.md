@@ -13,17 +13,14 @@ one clip — explaining the same problem about a minute later.
 
 ## Users
 
-- **Primary:** a CMU student stuck on a problem set, in a browser, at 1am.
+- **Primary:** a student stuck on a problem set, in a browser.
 - **Secondary:** the same student with the problem in an IDE or a PDF — they
   paste a screenshot into the web app instead.
-- **Tertiary:** the hackathon judge watching the demo. Optimize for the first
-  two and the third takes care of itself — guardrails mode exists mainly to
-  give the third an honest answer to "isn't this cheating?"
 
 ## Functional requirements
 
-Numbered so we can point at them. **Must** = demo dies without it. **Should** =
-demo is noticeably better with it. **Could** = if there's time.
+Numbered so we can point at them. **Must** = the system doesn't work without
+it. **Should** = noticeably worse without it. **Could** = if there's time.
 
 ### Capture
 
@@ -41,7 +38,7 @@ demo is noticeably better with it. **Could** = if there's time.
 |---|---|---|
 | F6 | The screenshot is transcribed to verbatim problem text plus a category (`math` / `algorithm` / `unknown`). | Must |
 | F7 | A screenshot with no recognizable problem fails cleanly with a message, rather than producing an explanation of nothing. | Should |
-| F8 | Transcription is deterministic enough that the same problem at different zoom levels produces the same normalized text most of the time. | Should — **unmeasured, test in Sprint 1** |
+| F8 | Transcription is deterministic enough that the same problem at different zoom levels produces the same normalized text most of the time. | Should — unmeasured |
 
 ### Explanation
 
@@ -96,7 +93,7 @@ demo is noticeably better with it. **Could** = if there's time.
 | N2 | Video latency: **< 120s** p50 on a cold request, including up to 3 repair attempts per scene, run concurrently across scenes. |
 | N3 | Concurrent scene renders are capped (the CPU-bound part). Number is a config knob; start at `runtime.NumCPU() / 2`. |
 | N4 | One bad scene cannot wedge a worker or the rest of the job — every render has a hard per-container timeout, and one scene's failure never blocks the others. |
-| N5 | Everything runs on one laptop for the demo, using Docker for render isolation and a local S3-compatible store (MinIO) so no laptop needs real AWS credentials to develop against. Real AWS is a config swap, not a code change, for the presenting machine. |
+| N5 | Render isolation runs in Docker; a local S3-compatible store (MinIO) means no machine needs real AWS credentials to develop against. Real AWS is a config swap, not a code change. |
 | N6 | The whole system starts with one command per service (see [SETUP.md](SETUP.md)). |
 
 ## Out of scope — for now
@@ -104,24 +101,15 @@ demo is noticeably better with it. **Could** = if there's time.
 Deferred, not deleted. See CONTRACTS §5 for where each slots back in.
 
 - A real vector database for Manim-doc retrieval (an in-memory index over a
-  fixed corpus is enough for one weekend)
+  fixed corpus is enough for now)
 - Narration audio / TTS (conflicts with the no-re-encode concat design)
 - Any verification that the explanation or generated code is *correct*
 - Accounts, history, anything persistent per user
 - Mobile, Firefox, Safari
 - Automated enforcement of guardrails mode (it's a prompt instruction,
-  spot-checked by hand, not a filter)
+  verified by hand, not a filter)
 
 ## Open questions
 
-- **Determinism of transcription** without `temperature=0` — CONTRACTS §1.
-- **Cache hit rate in practice** — Sprint 1 experiment.
-- **Embeddings model for Manim-doc retrieval** — local model preferred over an
-  API call, to keep it off the latency-critical path. CONTRACTS §1.
-- **Does guardrails mode actually withhold the answer?** Needs a human
-  spot-check on real problems, not just a prompt review.
-- **Is this a cheating tool?** Guardrails mode is the real answer, not a
-  disclaimer — but only if it demonstrably works.
-- **Privacy.** The screenshot is the whole viewport, and it now lives on S3
-  instead of only local disk. For the demo we say so out loud; for anything
-  real it needs a crop step and a real retention policy.
+See [../AGENTS.md](../AGENTS.md#open-questions) and CONTRACTS for the current
+list and where each decision lives.

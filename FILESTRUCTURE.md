@@ -1,12 +1,12 @@
 # File structure
 
 Proposed. Nothing under `agent/`, `server/`, `client/`, `render/` (the Docker
-build context), or `samples/` exists yet — each lane creates its own
+build context), or `samples/` exists yet — each component creates its own
 directory. Keep to this layout so paths in the docs stay true.
 
 ```
 HackCMU/
-├── AGENTS.md                  ← start here; also the clock, five cycles, demo Sat 4 PM
+├── AGENTS.md                  ← start here: the idea, the flow, the architecture
 ├── CONTRACTS.md                ← shapes at every boundary (draft)
 ├── FILESTRUCTURE.md            ← this file
 ├── README.md
@@ -15,16 +15,15 @@ HackCMU/
 ├── docs/
 │   ├── FRD.md                  ← functional requirements
 │   ├── SETUP.md                ← install + run everything
-│   └── WORK_SPLIT.md           ← four lanes, who owns what, what each fakes
+│   └── WORK_SPLIT.md           ← four components, who owns what, what each fakes
 │
 ├── samples/
 │   └── product_rule_scenes.py  ← verified Manim reference; codegen cheatsheet
 │                                  seed AND the first entry in the Manim-doc
-│                                  corpus (does not exist yet — render/ lane,
-│                                  Sprint 1)
+│                                  corpus (does not exist yet — render/ owns it)
 │
 ├── docker/
-│   └── manim-worker/           ← render/ lane, built once in Sprint 1
+│   └── manim-worker/           ← render/ component
 │       ├── Dockerfile          ← Python 3.12 + Manim CE + LaTeX + dvisvgm + ffmpeg
 │       └── entrypoint.sh       ← runs manim on /work/scene.py, writes /work/out.mp4
 │
@@ -48,25 +47,25 @@ HackCMU/
 │   ├── requirements.txt
 │   └── .env.example
 │
-├── server/                     ← Go · one module, two lanes
+├── server/                     ← Go · one module, two components
 │   ├── go.mod
 │   ├── cmd/
 │   │   └── server/
 │   │       └── main.go          ← wires everything, reads env, starts HTTP
 │   ├── internal/
-│   │   ├── api/                 ← server/ lane
+│   │   ├── api/                 ← server/ component
 │   │   │   ├── handlers.go       ← POST /api/jobs, GET /api/jobs/{id}, /healthz
 │   │   │   └── cors.go
-│   │   ├── jobs/                ← server/ lane
+│   │   ├── jobs/                ← server/ component
 │   │   │   ├── job.go             ← Job struct = CONTRACTS §2 shape, status enum, scenes_total/done
 │   │   │   ├── store.go           ← Redis read/write, TTL reset on every update
 │   │   │   └── worker.go          ← the goroutine: vision → cache? → explain → fan out scenes → concat → upload
-│   │   ├── cache/                ← server/ lane
+│   │   ├── cache/                ← server/ component
 │   │   │   ├── key.go             ← PromptVersion const, normalize(), Hash() — includes guardrails
 │   │   │   └── key_test.go
-│   │   ├── agent/                ← server/ lane
+│   │   ├── agent/                ← server/ component
 │   │   │   └── client.go          ← HTTP client for the Python service
-│   │   └── render/               ← render/ lane
+│   │   └── render/               ← render/ component
 │   │       ├── docker.go          ← Render(): temp dir + `docker run` manim-worker → mp4 path
 │   │       ├── precheck.go        ← AST parse via python, banned imports
 │   │       ├── repair.go          ← RenderWithRepair(), 3 attempts, per scene
@@ -105,27 +104,26 @@ HackCMU/
 
 ## Rules
 
-- **One lane, one directory.** Don't edit another lane's directory without
-  telling them; you'll both be pushing to `main`.
-- **`server/internal/render/` is the `render/` lane** even though it's inside
-  `server/`. The boundary is the `Render()` / `RenderWithRepair()` / `Concat()`
-  function signatures in [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md).
-- **`docker/manim-worker/` is also the `render/` lane.** It's the image every
-  container in `Render()` runs from — build it first, in Sprint 1.
-- **`agent/manim_docs/` is the `agent/` lane**, even though it never calls
-  Claude directly — it's the retrieval half of the codegen pipeline, owned by
-  the same people who write the codegen prompt.
-- **`client/projects/shared/` is shared by two shells, not two lanes.** It's
-  all `client/`.
+- **One component, one directory.** Don't edit another component's directory
+  without saying so — you'll both be pushing to `main`.
+- **`server/internal/render/` is the `render/` component** even though it's
+  inside `server/`. The boundary is the `Render()` / `RenderWithRepair()` /
+  `Concat()` function signatures in [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md).
+- **`docker/manim-worker/` is also the `render/` component.** It's the image
+  every container in `Render()` runs from — build it before anything that
+  depends on it.
+- **`agent/manim_docs/` is the `agent/` component**, even though it never
+  calls Claude directly — it's the retrieval half of the codegen pipeline,
+  owned by whoever writes the codegen prompt.
+- **`client/projects/shared/` is shared by two shells, not two components.**
+  It's all `client/`.
 - Generated output (`server/renders/` temp dirs, `media/`, `.venv/`, `.env`,
   Angular's `dist/`) is gitignored. Finished videos live in S3, not in the
   repo or on disk long-term.
-- Docs at the root are everyone's. Change `CONTRACTS.md` in its own commit.
+- Docs at the root are shared. Change `CONTRACTS.md` in its own commit.
 
 ## Git
 
-Everyone pushes to `main`. Pull before you push. If two people touch the same
-file, the second one to push resolves it. Keep commits small so that's cheap.
-
-Branches are fine if you want them, but nothing is required to go through a PR.
-There's no time.
+Push to `main`, pulling first. If two people touch the same file, the second
+push resolves it — keep commits small so that's cheap. Branches are fine if
+you want them; nothing requires going through a PR.

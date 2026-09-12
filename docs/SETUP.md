@@ -1,9 +1,9 @@
 # Setup
 
-Everything runs on one laptop, using Docker for render isolation and a local
-S3-compatible store so nobody needs real AWS credentials to develop. Get this
-working before writing any code in your lane — especially the Docker image
-build, which is the thing most likely to eat an hour if left for later.
+Everything runs locally, using Docker for render isolation and a local
+S3-compatible store so nobody needs real AWS credentials to develop. Get the
+Docker image built first — it's the step most likely to take a while if left
+for later.
 
 Assumes macOS with Homebrew. Adjust for Linux; Windows is on your own.
 
@@ -16,7 +16,7 @@ cd HackCMU
 
 ## 1. Anthropic API key
 
-Everyone needs one, even if you're not on the `agent/` lane — you'll be running
+Everyone needs one, even if you're not working on `agent/` — you'll be running
 the full stack locally.
 
 ```sh
@@ -32,7 +32,7 @@ pip install anthropic
 python -c "import anthropic; c=anthropic.Anthropic(); print(c.models.retrieve('claude-opus-5').display_name)"
 ```
 
-## 2. Docker — do this early, it's the critical path
+## 2. Docker — build the image early
 
 ```sh
 brew install --cask docker
@@ -73,7 +73,7 @@ If the MP4 exists, you're good. If it dies on `latex` or `dvisvgm`, the
 `Dockerfile` is missing a TeX package — fix the image, not your host, and
 rebuild. Nothing downstream works until this passes.
 
-Flags you'll use: `-ql` (480p, fast, for dev) · `-qm` (720p, for the demo) ·
+Flags you'll use: `-ql` (480p, fast, for dev) · `-qm` (720p, for production) ·
 `-o <name>` (output filename) · `--media_dir` (keep scratch output inside the
 per-job temp dir, not wherever manim feels like).
 
@@ -97,8 +97,8 @@ mc anonymous set download local/hackcmu-renders   # public-read, matches CONTRAC
 ```
 
 Go's S3 client (AWS SDK v2) talks to MinIO the same way it talks to real AWS —
-only `S3_ENDPOINT` changes. On the presenting machine for the demo, point
-`S3_ENDPOINT` at real AWS instead and re-verify before code freeze.
+only `S3_ENDPOINT` changes. In production, point `S3_ENDPOINT` at real AWS
+instead and re-verify.
 
 ## 4. Python (agent service)
 
@@ -111,8 +111,8 @@ pip install -r requirements.txt   # anthropic, fastapi, uvicorn, pydantic, sente
 
 `sentence-transformers` is for local, no-API-key embeddings used by
 `/manim-docs` retrieval — CPU-only, downloads a small model on first run. If
-it's not installed in time, retrieval falls back to keyword matching; the
-service still runs either way.
+it isn't installed, retrieval falls back to keyword matching; the service
+still runs either way.
 
 Run:
 
@@ -204,9 +204,9 @@ Then `curl localhost:8080/healthz` should return
 | `ANTHROPIC_API_KEY` | — | agent |
 | `AGENT_URL` | `http://localhost:8000` | server |
 | `REDIS_ADDR` | `localhost:6379` | server |
-| `S3_ENDPOINT` | `http://localhost:9000` (MinIO) | server (render lane) |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `minioadmin` / `minioadmin` | server (render lane) |
-| `RENDER_BUCKET` | `hackcmu-renders` | server (render lane) |
+| `S3_ENDPOINT` | `http://localhost:9000` (MinIO) | server (render component) |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `minioadmin` / `minioadmin` | server (render component) |
+| `RENDER_BUCKET` | `hackcmu-renders` | server (render component) |
 | `RENDER_CONCURRENCY` | `NumCPU/2` | server |
 | `RENDER_TIMEOUT_SEC` | `120` | server |
 | `PORT` | `8080` | server |

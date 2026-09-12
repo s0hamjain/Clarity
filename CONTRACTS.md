@@ -1,9 +1,9 @@
 # CONTRACTS — draft
 
-**Status: draft, not frozen.** This is the shape we're building against so four
-people on four laptops can work without talking. It is expected to change
-tonight. When it does: change it *here first*, in a commit that touches nothing
-else, and say so in the group chat.
+**Status: draft.** These are the exact shapes every component builds against,
+so they can be developed independently. When a shape here needs to change,
+change it here first, in a commit that touches nothing else, and tell whoever
+owns the affected components.
 
 Anything marked **OPEN** is an unmade decision, not an oversight.
 
@@ -12,36 +12,36 @@ Anything marked **OPEN** is an unmade decision, not an oversight.
 ## 0. What runs where
 
 ```
-Angular extension panel  ──HTTP──►  Go coordinator  ──HTTP──►  Python agent service ──► Claude API
-Angular web app (paste)             :8080                      :8000
-                                       │
-                                       ├──► Redis              (job status + cache)
-                                       ├──► Docker render pool (one container per scene)
-                                       ├──► ffmpeg             (concat, no re-encode)
-                                       └──► S3                 (finished MP4s)
+Client (extension panel or web app) ──HTTP──► Coordinator ──HTTP──► Agent service ──► Claude API
+                                                :8080                :8000
+                                                  │
+                                                  ├──► Redis              (job status + cache)
+                                                  ├──► Docker render pool (one container per scene)
+                                                  ├──► ffmpeg             (concat, no re-encode)
+                                                  └──► S3                 (finished MP4s)
 ```
 
-- **Python owns every Claude call.** Vision, explanation, Manim-doc retrieval,
-  codegen. Nothing else talks to the Anthropic API.
-- **Go owns orchestration.** The job queue, the per-scene fan-out, the cache,
-  Docker dispatch, the repair loop, ffmpeg, S3, Redis.
+- **The agent service owns every model call.** Transcription, explanation,
+  Manim-doc retrieval, codegen. Nothing else talks to the Anthropic API.
+- **The coordinator owns orchestration.** The job queue, the per-scene
+  fan-out, the cache, Docker dispatch, the repair loop, ffmpeg, S3, Redis.
 - **Rendering happens per scene, in parallel, each in its own container.** A
-  storyboard is 2–5 scenes; Go dispatches all of them at once (bounded by a
-  concurrency cap) and only concatenates once every scene has a finished MP4 or
-  has exhausted repair.
-- The two services talk over plain HTTP on localhost. Both run on the same
-  machine for the demo; Docker containers run alongside them.
+  storyboard is 2–5 scenes; the coordinator dispatches all of them at once
+  (bounded by a concurrency cap) and only concatenates once every scene has a
+  finished MP4 or has exhausted repair.
+- The two services talk over plain HTTP on localhost, running on the same
+  machine for local development; Docker containers run alongside them.
 
 ---
 
 ## 1. Python agent service (internal)
 
-Base URL: `http://localhost:8000`. Not exposed to the browser — only Go calls
-it.
+Base URL: `http://localhost:8000`. Not exposed to the browser — only the
+coordinator calls it.
 
-Every request below carries a `guardrails: bool` (default `false`). It changes
-what the model produces, so it flows through every call in the chain and is
-part of the cache key (§3).
+Every request below carries a `guardrails: bool` (default `false`). It
+changes what the model produces, so it flows through every call in the chain
+and is part of the cache key (§3).
 
 ### `POST /vision`
 
@@ -61,14 +61,15 @@ part of the cache key (§3).
 |---|---|
 | `problem_text` | **Verbatim transcription.** No paraphrase, no interpretation, no added context. This string gets hashed — any editorializing destroys the cache. |
 | `category` | `"math"` \| `"algorithm"` \| `"unknown"` — picks which explainer prompt and which Manim-doc topics are relevant. |
-| `confidence` | 0.0–1.0. Below 0.5 Go still proceeds but flags the job. |
+| `confidence` | 0.0–1.0. Below 0.5 the coordinator still proceeds but flags the job. |
 
 If nothing problem-like is on screen: `category: "unknown"`, `problem_text: ""`.
-Go fails the job cleanly rather than explaining a screenshot of someone's inbox.
+The job fails cleanly rather than explaining a screenshot of someone's inbox.
 
 **Note on `image_b64`:** the client sends a full data URL
-(`data:image/png;base64,iVBOR...`). **Go strips the `data:...;base64,` prefix**
-before calling Python. Python receives raw base64 only.
+(`data:image/png;base64,iVBOR...`). **The coordinator strips the
+`data:...;base64,` prefix** before calling the agent service, which receives
+raw base64 only.
 
 **OPEN — how do we make this deterministic?** The cache only works if two
 students get byte-identical `problem_text`. `temperature`/`top_p`/`top_k` were
@@ -82,8 +83,9 @@ removed on Claude Opus 5 and Sonnet 5 and return a **400**. Three options:
    everything else.
 3. Accept jitter and lean harder on `normalize()`.
 
-`agent/` owns this decision and should make it by end of Sprint 2, because it's
-the thing the cache-collision test in Sprint 1 is actually testing.
+The agent component owns this decision, informed by a cache-collision
+experiment: screenshot one problem several different ways and count how many
+distinct `problem_text` values come back.
 
 ### `POST /explain`
 
@@ -119,9 +121,9 @@ the thing the cache-collision test in Sprint 1 is actually testing.
 
 | Field | Notes |
 |---|---|
-| `explanation` | Markdown. **This is the product.** Go writes it to Redis the second it lands and the user sees it immediately — long before any video exists. In `guardrails: true`, this walks through method and reasoning and stops short of the final answer (see below). |
+| `explanation` | Markdown. **This is the product.** The coordinator writes it to Redis the second it lands and the user sees it immediately — long before any video exists. |
 | `storyboard.title` | Opening title card. |
-| `storyboard.scenes` | **2–5 items.** Each is now an independent Manim `Scene`, rendered as its own container and its own MP4, concatenated in order. This is the change from the single-scene design: it's what makes per-scene parallel rendering possible. |
+| `storyboard.scenes` | **2–5 items.** Each is an independent Manim `Scene`, rendered as its own container and its own MP4, concatenated in order. This is what makes per-scene parallel rendering possible. |
 | `scenes[].narration` | ≤ 90 chars. Becomes **on-screen text**, not audio. |
 | `scenes[].visual` | What the scene shows, in relative terms ("below", "next to", "replacing"). Never coordinates. |
 | `scenes[].duration_seconds` | 5–15. A budget, not a promise. |
@@ -131,13 +133,14 @@ algebra is wasted — the explanation already did it better, in less time.
 Prefer: a function and its derivative plotted together, a pointer walking a
 list, a shape transforming, a quantity growing.
 
-**Guardrails mode** (`guardrails: true`): the explanation and every scene teach
-the *method*, not the *result*. For math, that means showing the rule and
-working the setup, then leaving the final substitution as a step the student
-does themselves. For code, that means walking the algorithm's logic and data
-flow without emitting a complete, copy-pasteable solution — a skeleton with the
-key decision points named but not filled in. This is the honest answer to "is
-this a cheating tool?" — a real toggle, not a disclaimer.
+**Guardrails mode** (`guardrails: true`): the explanation and every scene
+teach the *method*, not the *result*. For math, that means showing the rule
+and working the setup, then leaving the final substitution as a step the
+student does themselves. For code, that means walking the algorithm's logic
+and data flow without emitting a complete, copy-pasteable solution — a
+skeleton with the key decision points named but not filled in. This is a
+prompt instruction, not an enforced filter, so it needs verification against
+real output before being relied on.
 
 ### `POST /manim-docs`
 
@@ -160,16 +163,16 @@ usage instead of letting it guess.
 Implementation: a small curated corpus — the official Manim CE docs' worked
 examples plus `samples/product_rule_scenes.py` — chunked, embedded once at
 startup, retrieved by cosine similarity against the scene's `visual` text.
-Top 2–3 snippets. This does not need to be fancy; a static corpus of ~50–100
-chunks and an in-memory embedding index is plenty for one weekend. **`agent/`
-owns the corpus and the retrieval; it's a library call inside the service, not
-a second network hop.**
+Top 2–3 snippets. A static corpus of ~50–100 chunks and an in-memory
+embedding index is enough; it doesn't need a real vector database. The agent
+component owns the corpus and the retrieval; it's a library call inside the
+service, not a second network hop.
 
 **OPEN — embeddings model.** Anthropic doesn't currently offer a public
 embeddings endpoint; use a small local model (e.g. `sentence-transformers`,
 CPU-only, no API key) so retrieval has zero added latency and zero extra cost.
-Fall back to keyword/BM25 match against snippet titles if that's not installed
-in time — worse recall, zero setup risk.
+Keyword/BM25 match against snippet titles is the fallback — worse recall,
+zero setup cost.
 
 ### `POST /codegen`
 
@@ -189,13 +192,14 @@ siblings.
 { "manim_source": "from manim import *\n\nclass GeneratedScene(Scene):\n    ...", "scene_class": "GeneratedScene" }
 ```
 
-On a repair attempt, Go sends back the source that failed for *this scene*
-plus its traceback and gets corrected source back. Same endpoint, same shape.
+On a repair attempt, the coordinator sends back the source that failed for
+*this scene* plus its traceback and gets corrected source back. Same
+endpoint, same shape.
 
 | Field | Notes |
 |---|---|
 | `manim_source` | Complete runnable Manim CE Python. One file. No imports beyond `manim` and the stdlib. |
-| `scene_class` | **Always the literal `"GeneratedScene"`.** Every scene renders in its own container with its own temp directory, so there's no collision risk from reusing the name — Go never needs to parse source to find a class. Anything else in this field = treat as a failure, trigger repair. |
+| `scene_class` | **Always the literal `"GeneratedScene"`.** Every scene renders in its own container with its own temp directory, so there's no collision risk from reusing the name. Anything else in this field = treat as a failure, trigger repair. |
 
 Constraints baked into the prompt:
 
@@ -204,9 +208,9 @@ Constraints baked into the prompt:
 - Relative positioning only: `next_to`, `arrange`, `to_edge`, `shift` by
   fractions of `config.frame_width`. **Never literal coordinates.**
 - **Every scene must be rendered with the same resolution, frame rate, and
-  background** (Go fixes the manim quality flag identically across all scenes
-  in a job) — the ffmpeg concat step (§4) depends on this and cannot fix a
-  mismatch after the fact.
+  background** (the coordinator fixes the manim quality flag identically
+  across all scenes in a job) — the ffmpeg concat step (§4) depends on this
+  and cannot fix a mismatch after the fact.
 - Include the retrieved `manim_snippets` verbatim in the prompt as the
   reference to imitate.
 
@@ -226,14 +230,14 @@ option 2 above.
 
 ---
 
-## 2. Public HTTP API (Go)
+## 2. Public HTTP API (coordinator)
 
 Base URL in dev: `http://localhost:8080`. `Access-Control-Allow-Origin: *` on
 every route — the extension panel and the web app are both cross-origin.
 
 ### `POST /api/jobs`
 
-Creates a job. **Returns before any Claude call happens.**
+Creates a job. **Returns before any model call happens.**
 
 ```json
 // request
@@ -291,28 +295,28 @@ The only endpoint the client polls. Poll every **1s**, give up at **180s**.
 **Two rules the client must honor:**
 
 1. **Render `explanation` the instant it is non-null**, whatever the status
-   says. Do not wait for `done`. The entire architecture exists to make this
-   moment early — a UI that waits for the video makes a working system feel
-   broken.
+   says. Do not wait for `done` — a UI that waits for the video makes a
+   working system feel broken.
 2. **`failed` is not empty.** If `explanation` is non-null on a failed job,
-   show it with a note that the animation didn't render. That's the difference
-   between a dead demo and a working one.
+   show it with a note that the animation didn't render.
 
 `scenes_total` / `scenes_done` drive a progress indicator ("rendering scene 2
-of 3") — nicer than a spinner, and it's data Go already has.
+of 3") — nicer than a spinner, and it's data the coordinator already has.
 
 `cached: true` means the whole pipeline was skipped on a hash hit — usually
 lands on the first poll.
 
 ### `GET /renders/{hash}.mp4`
 
-**Not served by Go.** `video_url` is a presigned or public S3 URL directly —
-the client streams from S3, not through the coordinator. Go's only job here is
-putting the right URL in Redis and in the job record.
+**Not served by the coordinator.** `video_url` is a presigned or public S3
+URL directly — the client streams from S3, not through the coordinator. The
+coordinator's only job here is putting the right URL in Redis and in the job
+record.
 
 *(Local dev without AWS creds: point `S3_ENDPOINT` at a local
-[MinIO](https://min.io) container — it speaks the S3 API, so nothing in Go or
-the client needs to know the difference. See [docs/SETUP.md](docs/SETUP.md).)*
+[MinIO](https://min.io) container — it speaks the S3 API, so nothing on
+either side needs to know the difference. See
+[docs/SETUP.md](docs/SETUP.md).)*
 
 ### `GET /healthz`
 
@@ -329,9 +333,9 @@ sha256(PromptVersion + "||" + normalize(problem_text) + "||" + normalize(user_pr
 
 Hex digest, **first 16 chars**. `normalize` = lowercase, trim, collapse every
 run of whitespace (including newlines) to one space. Nothing else — no
-punctuation stripping, no unicode folding. Implemented in Go; Python doesn't
-need it. `guardrails` is serialized as the literal string `"true"` or
-`"false"`.
+punctuation stripping, no unicode folding. Implemented in the coordinator; the
+agent service doesn't need it. `guardrails` is serialized as the literal
+string `"true"` or `"false"`.
 
 Four details, each load-bearing:
 
@@ -340,11 +344,10 @@ Four details, each load-bearing:
 - **Guardrails is in the key.** A guided-mode explanation and an answer-mode
   explanation are different artifacts for the same problem — they must not
   collide.
-- **`PromptVersion` is a hand-bumped constant in the Go server.** Bump it
-  whenever *any* prompt text changes — including prompts that live in Python.
-  Without it, a prompt improvement appears to do nothing because Redis keeps
-  serving what the old prompt produced. This is the bug that eats an hour at
-  3am.
+- **`PromptVersion` is a hand-bumped constant.** Bump it whenever *any* prompt
+  text changes — including prompts that live in the agent service. Without
+  it, a prompt improvement appears to do nothing because Redis keeps serving
+  what the old prompt produced.
 - **Matching is exact.** Hashing has no notion of "close enough." Normalization
   is the only defense against transcription jitter between two students at
   different zoom levels.
@@ -357,9 +360,8 @@ Four details, each load-bearing:
 | `cache:<problem_hash>` | `{ "video_url": "...", "explanation": "..." }` | 7d |
 
 Checked after `/vision`. **A cache hit returns both the video and the
-explanation** — the OPEN question from the earlier draft is resolved: yes,
-cache the explanation too, otherwise a cache hit shows a video with nothing to
-read while it loads.
+explanation** — a cache hit showing a video with nothing to read while it
+loads defeats the point.
 
 Written only after a successful render **and** successful S3 upload. **Never
 written on failure** — a failed render must not poison the next student.
@@ -370,12 +372,12 @@ written on failure** — a failed render must not poison the next student.
 
 ### Per-scene fan-out
 
-Once `/explain` returns a storyboard with N scenes, Go fires N goroutines,
-bounded by a semaphore sized from `RENDER_CONCURRENCY`. Each goroutine
-independently: calls `/manim-docs`, calls `/codegen`, dispatches to a Docker
-worker, and retries up to 3 times through the repair loop **for that scene
-only** on failure. Go waits for all N to finish (or exhaust retries) before
-moving on.
+Once `/explain` returns a storyboard with N scenes, the coordinator fires N
+goroutines, bounded by a semaphore sized from `RENDER_CONCURRENCY`. Each
+goroutine independently: calls `/manim-docs`, calls `/codegen`, dispatches to
+a Docker worker, and retries up to 3 times through the repair loop **for that
+scene only** on failure. The coordinator waits for all N to finish (or
+exhaust retries) before moving on.
 
 ```go
 // Render runs one scene's source in an isolated container and returns the
@@ -389,7 +391,8 @@ type RenderError struct {
 }
 
 // RenderWithRepair wraps Render with up to 3 attempts, calling back into
-// /codegen (via a function Go hands it) with the previous source + traceback.
+// /codegen (via a function the coordinator hands it) with the previous
+// source + traceback.
 func RenderWithRepair(ctx context.Context, scene Scene, codegen CodegenFunc) (clipPath string, err *RenderError)
 ```
 
@@ -397,13 +400,13 @@ If a scene exhausts all 3 repair attempts, **that scene is dropped, not the
 whole job** — ffmpeg concatenates whatever scenes did succeed. A 2-of-3-scene
 video beats no video. If *zero* scenes succeed, the job still resolves to
 `done`-without-video: explanation shown, note that the animation didn't
-render. **Never fail the explanation because rendering failed.**
+render.
 
 ### Docker isolation
 
 Each scene renders in its own container from a prebuilt image
-(`manim-worker`, built once in Sprint 1 — Python 3.12 + Manim CE + LaTeX +
-ffmpeg baked in, so no per-render install cost).
+(`manim-worker` — Python 3.12 + Manim CE + LaTeX + ffmpeg baked in, so no
+per-render install cost).
 
 ```sh
 docker run --rm \
@@ -426,9 +429,10 @@ docker run --rm \
 
 ### FFmpeg concat — no re-encoding
 
-Because every scene in a job renders at the same resolution/fps (Go passes the
-identical manim quality flag to all of them), the finished clips can be joined
-with the concat demuxer and a stream copy — no re-encode, effectively free:
+Because every scene in a job renders at the same resolution/fps (the
+coordinator passes the identical manim quality flag to all of them), the
+finished clips can be joined with the concat demuxer and a stream copy — no
+re-encode, effectively free:
 
 ```sh
 # concat_list.txt:
@@ -447,29 +451,29 @@ from a single job-level constant, never per-scene.
 
 Final MP4 uploads to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`. `video_url` in
 the job record and the cache is either a public URL (bucket configured for
-public read on this prefix — simplest for a demo) or a presigned GET URL
-(safer, adds one more moving part). **Default to public-read for the demo;
-presigned URLs are a one-line upgrade if privacy becomes a concern.**
+public read on this prefix — simplest) or a presigned GET URL (safer, adds
+one more moving part). Public-read is the default; presigned URLs are a
+one-line upgrade if privacy becomes a concern.
 
 **Deleting expired videos:** no code needed. A bucket lifecycle rule
 (`renders/` prefix, expire after **14 days**) handles it natively. Redis's
-`cache:<hash>` TTL is **7 days** — shorter than the S3 lifecycle — so the cache
-always stops pointing at a video before S3 removes it. No reaper process, no
-keyspace-notification listener, nothing to get wrong at 3am.
+`cache:<hash>` TTL is **7 days** — shorter than the S3 lifecycle — so the
+cache always stops pointing at a video before S3 removes it. No reaper
+process, no keyspace-notification listener, nothing extra to maintain.
 
 ---
 
 ## 5. Deferred, not deleted
 
-These were cut for time. They are listed so nobody re-litigates them at 3am,
-and so we know where they'd slot back in.
+These were left out of the initial build. They're listed so nobody
+re-decides them from scratch, and so we know where they'd slot back in.
 
-| Thing | Why cut | Where it goes back in |
+| Thing | Why deferred | Where it goes back in |
 |---|---|---|
-| Real vector DB for Manim-doc retrieval (Pinecone/pgvector/etc.) | An in-memory embedding index over ~100 chunks is enough for one corpus that never grows during the hackathon. | Swap the in-memory index in `agent/manim_docs.py` for a real store if the corpus needs to scale. |
+| Real vector DB for Manim-doc retrieval (Pinecone/pgvector/etc.) | An in-memory embedding index over ~100 chunks is enough for a corpus that doesn't grow. | Swap the in-memory index in `agent/manim_docs.py` for a real store if the corpus needs to scale. |
 | Narration audio (TTS) | Audio forces re-encoding at concat time, which conflicts with the no-re-encode concat design in §4. | `scenes[].narration` is already the right field; add a TTS step before concat and drop `-c copy`. |
-| Verification that the explanation or generated code is *correct* | No time, no clear mechanism. | Would need a second model pass or test execution — open research question, not a Sprint 5 task. |
-| Accounts, history, anything persistent per user | Out of scope for a demo. | — |
+| Verification that the explanation or generated code is *correct* | No clear mechanism yet. | Would need a second model pass or test execution — open research question. |
+| Accounts, history, anything persistent per user | Out of scope. | — |
 
 ---
 
@@ -477,8 +481,8 @@ and so we know where they'd slot back in.
 
 **Cache hit rate is unmeasured.** The whole caching story depends on two
 students producing byte-identical transcriptions of the same problem at
-different zoom levels and window widths. **Test this in Sprint 1:** screenshot
-one problem six different ways, count distinct hashes.
+different zoom levels and window widths. Worth measuring directly:
+screenshot one problem several different ways, count distinct hashes.
 
 **Generated Manim fails two ways.** Code that *crashes* is recoverable — the
 per-scene repair loop catches it. Code that *runs but produces a bad video*
@@ -486,35 +490,15 @@ per-scene repair loop catches it. Code that *runs but produces a bad video*
 detected programmatically. Mitigation is prompt constraints plus
 retrieval-grounded snippets (§1 `/manim-docs`).
 
-**LaTeX, inside the Docker image now, not the host.** `MathTex` needs a TeX
-distribution and `dvisvgm` **baked into `manim-worker`**. If the image is
-built without them, every math scene fails inside the container and the error
-is easy to miss because it's not on the host. **Verify the image, not just the
-host, in Sprint 1.**
-
-**Concat codec mismatch.** See §4's trap. One scene rendered at a different
-quality setting than its siblings breaks `-c copy` silently or loudly.
-
-**S3 / AWS credentials mid-hackathon.** Not everyone will have (or want to
-share) AWS keys at 9pm on a Friday. **Default local dev to MinIO** ([SETUP.md](docs/SETUP.md))
-so nobody is blocked on an AWS account; point `S3_ENDPOINT` at real AWS only on
-the presenting machine for the demo.
-
-**Docker adds a cold-start tax.** Building `manim-worker` (Python + Manim +
-LaTeX) takes real minutes the first time. **Build it once, in Sprint 1,
-immediately** — don't discover the build time at 3am when a render is blocked
-on it.
-
-**Per-scene parallelism multiplies API calls.** A 4-scene storyboard now means
+**Per-scene parallelism multiplies model calls.** A 4-scene storyboard means
 4× `/manim-docs` + 4× `/codegen` calls instead of 1. Latency to *first* scene
 starting render is unaffected (they fire concurrently), but total token spend
-per job goes up. Not a correctness risk, but worth knowing before assuming the
-old single-call latency numbers still hold.
+per job goes up.
 
 **Guardrails mode has no automated check.** Nothing stops the model from
-leaking the final answer anyway in "guided" mode — it's a prompt instruction,
-not a filter. Spot-check it on a few real problems before the demo; don't
-trust it on faith.
+leaking the final answer anyway in guided mode — it's a prompt instruction,
+not a filter. It needs verification against real output, not just a prompt
+review.
 
 **Screenshot limits.** `captureVisibleTab` grabs the visible viewport only —
 scrolled-off content is lost — and refuses on `chrome://` pages and the Web
