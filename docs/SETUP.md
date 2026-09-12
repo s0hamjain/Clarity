@@ -14,7 +14,7 @@ Clarity is four programs plus a few services, all running on your Mac:
 | **Docker** with the `manim-worker` image | Sandbox every animation renders inside | §6 |
 | **MinIO** | A local stand-in for S3, holds finished videos | §7 |
 
-…and you'll need accounts for **MongoDB Atlas** (free; database + vector search), **Anthropic** (the model), and **Voyage AI** (embeddings). Sections 3–5 walk through each.
+…and you'll need accounts for **Google AI Studio** (Gemini — reads the screenshot), **Anthropic** (Claude — explanation and code), **Voyage AI** (embeddings), and **MongoDB Atlas** (free; database + vector search). Sections 3–5 walk through each.
 
 This document walks every engineer through the full environment setup required to develop and run the whole system on one Mac. Complete **all sections** before starting sprint work. The two steps most likely to burn time if left for later are the `manim-worker` Docker build (§6) and the macOS permission prompts for the desktop app (§10) — do those first.
 
@@ -26,7 +26,7 @@ Assumes macOS 14+ on Apple Silicon with Homebrew. Linux works for everything exc
 
 1. [Prerequisites](#1-prerequisites)
 2. [Repository Setup](#2-repository-setup)
-3. [Anthropic API Key](#3-anthropic-api-key)
+3. [Model API Keys — Google Gemini + Anthropic](#3-model-api-keys--google-gemini--anthropic)
 4. [Voyage AI API Key (Embeddings)](#4-voyage-ai-api-key-embeddings)
 5. [MongoDB Atlas (Jobs, Cache, Snippet Corpus)](#5-mongodb-atlas-jobs-cache-snippet-corpus)
 6. [Docker + `manim-worker` Image](#6-docker--manim-worker-image)
@@ -99,18 +99,31 @@ Merge to `main` **only at sprint sync points**, in the order and with the protoc
 
 ---
 
-## 3. Anthropic API Key
+## 3. Model API Keys — Google Gemini + Anthropic
 
-Everyone needs one — you'll run the full stack locally.
+Two model providers. Everyone needs both keys — you'll run the full stack locally.
 
+| Provider | Used for | Model |
+|---|---|---|
+| **Google Gemini** | Reading the problem off the screenshot (`/vision`) | `gemini-3.8-flash` |
+| **Anthropic Claude** | Explanation (`/explain`) and Manim code (`/codegen`) | `claude-opus-5`, `claude-sonnet-5` |
+
+### 3.1 Gemini
+1. Go to https://aistudio.google.com → **Get API key** → Create.
+2. Put it in `agent/.env` as `GEMINI_API_KEY=AIza...` (§12). Never commit it.
+
+```sh
+pip install google-genai
+GEMINI_API_KEY=AIza... python3 -c "from google import genai; c=genai.Client(); print(c.models.get(model='gemini-3.8-flash').display_name)"
+```
+
+### 3.2 Anthropic
 1. Go to https://console.anthropic.com → API Keys → Create Key.
-2. Put it in `agent/.env` as `ANTHROPIC_API_KEY=sk-ant-...` (§12). Never commit it.
-
-Sanity check:
+2. Put it in `agent/.env` as `ANTHROPIC_API_KEY=sk-ant-...`.
 
 ```sh
 pip install anthropic
-ANTHROPIC_API_KEY=sk-ant-... python3 -c "import anthropic; c=anthropic.Anthropic(); print(c.models.retrieve('claude-opus-5').display_name)"
+ANTHROPIC_API_KEY=sk-ant-... python3 -c "import anthropic; c=anthropic.Anthropic(); print(c.models.retrieve('claude-sonnet-5').display_name)"
 ```
 
 ---
@@ -255,7 +268,7 @@ Console: http://localhost:9001 (minioadmin / minioadmin).
 ```sh
 cd agent
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt     # anthropic fastapi uvicorn pydantic voyageai pymongo python-dotenv
+pip install -r requirements.txt     # google-genai anthropic fastapi uvicorn pydantic voyageai pymongo python-dotenv
 cp .env.example .env                 # fill in §12 values
 ```
 
@@ -271,7 +284,7 @@ python scripts/seed_snippets.py                     # embeds and upserts every s
 ```sh
 uvicorn app.main:app --port 8000 --reload
 curl localhost:8000/healthz
-# → {"ok":true,"anthropic":true,"voyage":true,"atlas":true,"snippets_verified":N}
+# → {"ok":true,"gemini":true,"anthropic":true,"voyage":true,"atlas":true,"snippets_verified":N,...}
 ```
 
 ---
@@ -381,11 +394,15 @@ gh release create v0.1.0 desktop/dist/Clarity.dmg desktop/dist/Clarity.pkg --tit
 ### 12.1 `agent/.env`
 
 ```sh
+GEMINI_API_KEY=AIza...
 ANTHROPIC_API_KEY=sk-ant-...
 VOYAGE_API_KEY=pa-...
 MONGODB_URI=mongodb+srv://clarity:<password>@clarity.xxxxx.mongodb.net/clarity
 MONGODB_DB=clarity
 EMBED_MODEL=voyage-code-3
+VISION_MODEL=gemini-3.8-flash
+EXPLAIN_MODEL=claude-opus-5
+CODEGEN_MODEL=claude-sonnet-5
 ```
 
 ### 12.2 `server/.env`
@@ -447,7 +464,8 @@ Then `⌘⇧E`, drag a box around a problem, press Enter.
 | 7 | Atlas reachable | §5.7 ping | `{'ok': 1.0}` |
 | 8 | Vector index active | Atlas UI → Search Indexes | `snippets_vector` **Active** |
 | 9 | Voyage key works | §4 sanity check | `1024` |
-| 10 | Anthropic key works | §3 sanity check | `Claude Opus 5` |
+| 10 | Anthropic key works | §3.2 sanity check | `Claude Sonnet 5` |
+| 10b | Gemini key works | §3.1 sanity check | `Gemini 3.8 Flash` |
 | 11 | Corpus seeded | `curl localhost:8000/healthz` | `snippets_verified` ≥ 20 |
 | 12 | Coordinator healthy | `curl localhost:8080/healthz` | all `true` |
 | 13 | Screen Recording granted | `screencapture -i /tmp/x.png` from Terminal | crosshair appears |

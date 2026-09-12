@@ -1,8 +1,14 @@
 # Clarity — P1: AI (Agent Service)
 
-**You are P1. Your job in one sentence:** build the Python service that makes every call to Claude and returns exact JSON — read the problem off a screenshot, write the explanation and animation plan, find example code, write the Manim code, fix it when it crashes.
+**You are P1. Your job in one sentence:** build the Python service that makes every call to an AI model and returns exact JSON — read the problem off a screenshot (Gemini), write the explanation and animation plan (Claude Opus 5), find example code, write the Manim code and fix it when it crashes (Claude Sonnet 5).
 
-You are the only person who talks to the AI model. Nobody else writes a prompt. Nobody else imports `anthropic`.
+You are the only person who talks to any AI model. Nobody else writes a prompt. Nobody else imports `google.genai` or `anthropic`.
+
+| Task | Model | Why |
+|---|---|---|
+| `/vision` — OCR the screenshot | **Gemini 3.8 Flash** `gemini-3.8-flash` | Strong vision, fast, cheap, and accepts `temperature=0` — which the cache needs |
+| `/explain` — explanation + storyboard | **Claude Opus 5** `claude-opus-5` | Best reasoning for the part the user reads |
+| `/codegen` — Manim code + repair | **Claude Sonnet 5** `claude-sonnet-5` | Strong at code, faster and cheaper than Opus for 2–5 calls per job plus repairs |
 
 ---
 
@@ -15,7 +21,7 @@ You are the only person who talks to the AI model. Nobody else writes a prompt. 
 5. **Fix code.** Given the code that crashed plus its traceback, return fixed code.
 6. **Keep the library.** Seed it from `samples/*.py`, ingest new examples from successful renders as *unverified*, let a human promote them.
 
-Everything you return is JSON produced with Claude's **structured outputs** feature — schema-enforced, never prose you have to parse.
+Everything you return is schema-enforced JSON — Claude's **structured outputs** (`output_config.format`) and Gemini's **`response_schema`** — never prose you have to parse.
 
 ---
 
@@ -25,7 +31,7 @@ Everything you return is JSON produced with Claude's **structured outputs** feat
 |---|---|
 | `agent/**` — the whole directory | Any Go (`server/`) |
 | Every prompt | The Dockerfile, `samples/*.py` content (P2 writes those — you only *read* them) |
-| The Claude, Voyage, and Atlas clients | Anything in `desktop/` |
+| The Gemini, Claude, Voyage, and Atlas clients | Anything in `desktop/` |
 | The `manim_snippets` collection and its vector index | The `jobs` and `cache` collections (P3's) |
 | `agent/scripts/` and `agent/experiments/` | |
 | One exception: the one-line `PromptVersion` bump in `server/internal/cache/key.go` whenever you change a prompt | |
@@ -56,12 +62,13 @@ You **read** one thing P2 produces: `samples/*.py` files with a docstring header
 
 Follow [SETUP.md](SETUP.md) §1, §3, §4, §5, §8. You need:
 
-- `ANTHROPIC_API_KEY` — SETUP §3
+- `GEMINI_API_KEY` — SETUP §3.1
+- `ANTHROPIC_API_KEY` — SETUP §3.2
 - `VOYAGE_API_KEY` — SETUP §4
 - `MONGODB_URI` — SETUP §5 (one person creates the cluster; get the string from them, or create it yourself if you're first)
-- Python 3.12 venv in `agent/` with `anthropic fastapi uvicorn pydantic pydantic-settings voyageai pymongo python-dotenv`
+- Python 3.12 venv in `agent/` with `google-genai anthropic fastapi uvicorn pydantic pydantic-settings voyageai pymongo python-dotenv`
 
-Verify: all three sanity checks in SETUP §3–§5 print what they should.
+Verify: all four sanity checks in SETUP §3–§5 print what they should.
 
 Read once: **FRD §10** (your endpoints in context), **FRD §13** (RAG design), **FRD §9.3** (the snippet document and vector index), **API.md §3**, and **FRD §23 rules 1–6** (yours).
 
@@ -77,7 +84,8 @@ agent/
 │   ├── main.py                 # FastAPI app, routers, /healthz
 │   ├── config.py               # pydantic-settings reading .env
 │   ├── schemas.py              # Pydantic models = API.md §3 shapes, exactly
-│   ├── clients/claude.py       # anthropic.Anthropic(); structured-output helper; stream helper
+│   ├── clients/gemini.py       # google-genai client; temperature=0 + response_schema helper for /vision
+│   ├── clients/claude.py       # anthropic.Anthropic(); structured helper (Opus 5); stream helper (Sonnet 5)
 │   ├── clients/embed.py        # voyageai embed(texts, model, input_type)
 │   ├── clients/atlas.py        # pymongo client, collection handles, $vectorSearch helper
 │   ├── routers/vision.py
@@ -107,19 +115,20 @@ agent/
 
 ### Step 1 — Skeleton (45 min)
 - `app/main.py`: FastAPI app. Mount routers. No CORS (only the coordinator calls you).
-- `app/config.py`: `pydantic_settings.BaseSettings` with `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, `MONGODB_DB="clarity"`, `EMBED_MODEL="voyage-code-3"`.
+- `app/config.py`: `pydantic_settings.BaseSettings` with `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, `MONGODB_DB="clarity"`, `EMBED_MODEL="voyage-code-3"`, `VISION_MODEL="gemini-3.8-flash"`, `EXPLAIN_MODEL="claude-opus-5"`, `CODEGEN_MODEL="claude-sonnet-5"`; plus `GEMINI_API_KEY`.
 - `app/schemas.py`: one Pydantic model per request and response in **API.md §3**. Field names exact. These *are* the contract.
 - Every endpoint returns a valid hardcoded response so P3 can hit you today.
 
-### Step 2 — Clients (45 min)
-- `clients/claude.py`: one `anthropic.Anthropic()`. A helper `structured(prompt, schema_model, image=None, effort=None)` that calls `messages.create` with `output_config={"format": ...}` built from the Pydantic model's JSON schema and returns the parsed model. A second helper that uses `messages.stream()` + `get_final_message()` for long outputs (codegen). **Never** pass `temperature`; **never** use assistant prefill — both are 400s on Opus 5.
+### Step 2 — Clients (1 h)
+- `clients/gemini.py`: one `genai.Client()` (reads `GEMINI_API_KEY`). A helper `vision(image_bytes, mime_type, prompt, schema_model)` that calls `client.models.generate_content(model=VISION_MODEL, contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt], config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json", response_schema=schema_model, thinking_config=types.ThinkingConfig(thinking_level="low")))` and returns `schema_model.model_validate_json(response.text)`. **Always `temperature=0`** — that's the whole reason Gemini has this job.
+- `clients/claude.py`: one `anthropic.Anthropic()`. `structured(model, prompt, schema_model)` calls `messages.create` with `output_config={"format": ...}` built from the Pydantic model's JSON schema and returns the parsed model — used with `EXPLAIN_MODEL` (Opus 5). `structured_stream(model, ...)` uses `messages.stream()` + `get_final_message()` for long outputs — used with `CODEGEN_MODEL` (Sonnet 5). **Never** pass `temperature`; **never** use assistant prefill — both are 400s on Opus 5 and Sonnet 5.
 - `clients/embed.py`: `voyageai.Client().embed(texts, model=EMBED_MODEL, input_type="document"|"query").embeddings`.
 - `clients/atlas.py`: `MongoClient(MONGODB_URI)[MONGODB_DB]`; handles for `manim_snippets`.
-- `/healthz`: ping all three; report `snippets_verified` = count of `{verified: true}`.
+- `/healthz`: ping all four (Gemini, Anthropic, Voyage, Atlas); report `snippets_verified` = count of `{verified: true}` and the four model IDs.
 
-### Step 3 — Real `/vision` (45 min)
+### Step 3 — Real `/vision` on Gemini (45 min)
 - `prompts/vision.md`: transcribe the problem **verbatim**. No interpretation, no "the problem asks…", no summary. If there is no problem on screen, `category: "unknown"`, `problem_text: ""`.
-- `output_config={"effort": "low"}` — this is transcription, not reasoning.
+- Gemini 3.8 Flash, `temperature=0`, thinking `low`, `response_schema=VisionResponse` — this is transcription, not reasoning. Decode the base64 P3 sends you into bytes for the image `Part`.
 - Test: `curl` a real screenshot (SETUP §… curl cookbook in API.md §8). Compare the output to the image by eye. It should be character-for-character.
 
 ### Step 4 — Collision experiment (45 min)
@@ -127,7 +136,7 @@ agent/
 - Write the number in your PR description. It decides Sprint 2 Step 5.
 
 ### Done when
-- [ ] `uvicorn app.main:app --port 8000` starts; `curl localhost:8000/healthz` → `anthropic`, `voyage`, `atlas` all `true`.
+- [ ] `uvicorn app.main:app --port 8000` starts; `curl localhost:8000/healthz` → `gemini`, `anthropic`, `voyage`, `atlas` all `true`.
 - [ ] `/vision` on a real screenshot returns verbatim text and the right category.
 - [ ] Every other endpoint returns a schema-valid hardcoded response.
 - [ ] Collision number recorded: **N distinct out of 6**.
@@ -138,7 +147,7 @@ agent/
 
 **Goal:** a real explanation and storyboard come back; the library is seeded from P2's samples and searchable by meaning.
 
-### Step 1 — `/explain` (1.5 h)
+### Step 1 — `/explain` on Claude Opus 5 (1.5 h)
 - Prompts: `explain_math.md`, `explain_algorithm.md`, chosen by `category`. When `guardrails: true`, append `explain_guardrails.md`: teach the method, work the setup, **stop before the final answer** (math: leave the final substitution; code: give a skeleton with decision points named, never a complete solution).
 - Structured output = `ExplainResponse`. 2–5 scenes. `narration` ≤ 90 chars. `visual` in relative terms ("below", "next to"), never coordinates.
 - The storyboard rule, in the prompt as a rule *and* as a bad/good example pair: **every scene must show something text can't** — a function and its derivative plotted together, a pointer walking an array, a shape transforming. A scene that just restates algebra gets cut.
@@ -158,9 +167,9 @@ agent/
 - `GET /snippets` (filter `verified`, `origin`; paginate), `GET /snippets/{id}`, `PATCH /snippets/{id}` (re-embed if title/description/tags change), `DELETE /snippets/{id}`. API.md §3.6–3.9.
 - `scripts/promote_snippet.py <id>` = `PATCH {"verified": true}`.
 
-### Step 5 — Decide determinism (15 min)
-- If Sprint 1's number was **≥ 4 of 6 identical**: stay on Opus 5. Done.
-- If not: switch `/vision` only to `claude-haiku-4-5` with `temperature=0` (Haiku 4.5 still accepts it), re-run the experiment, record the new number. Update FRD §10.1 in its own commit.
+### Step 5 — Check determinism (15 min)
+- If Sprint 1's number was **≥ 4 of 6 identical**: Gemini at `temperature=0` is doing its job. Done.
+- If not: the fix is in the prompt or in `normalize()`, not the model — tighten the transcription instructions (e.g. "preserve line breaks exactly as shown" vs "join wrapped lines") and re-run. Record the new number. If it's still bad, raise it at the sync point.
 
 ### Done when
 - [ ] `/explain` returns a real explanation and a 2–5 scene storyboard for a real problem; guardrails variant withholds the answer on one test problem.
@@ -175,9 +184,9 @@ agent/
 
 **Goal:** real Manim code comes back for every scene, grounded in retrieved snippets; crashes get repaired; you can show retrieval helps.
 
-### Step 1 — `/codegen` (1.5 h)
+### Step 1 — `/codegen` on Claude Sonnet 5 (1.5 h)
+- Model is `CODEGEN_MODEL` = `claude-sonnet-5`, via the streaming helper. Same for repair.
 - `prompts/codegen.md` contains, in this order: the hard constraints (FRD §10.4 — `from manim import *` only, relative positioning only, never literal coordinates, never set resolution/fps, `narration` → `Text(...).to_edge(DOWN)`, class name is always `GeneratedScene`); a section **"Reference — imitate these"** with the retrieved snippets pasted verbatim; the scene's `narration` and `visual`; the output schema.
-- Use the streaming helper. Output can be long.
 - **Assert before returning:** `scene_class == "GeneratedScene"` and `"class GeneratedScene(Scene)" in manim_source`. Otherwise raise → `422 schema_violation`. P3 counts that as a failed attempt.
 
 ### Step 2 — Repair (45 min)
@@ -237,18 +246,18 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 
 ## Your rules (never break these — FRD §23)
 
-1. Every response uses structured outputs. Never parse prose for JSON. Never use assistant prefill. Never pass `temperature` to Opus 5.
+1. Every response is schema-enforced JSON (Claude `output_config.format`; Gemini `response_schema`). Never parse prose for JSON. Never use assistant prefill; never pass `temperature` to a Claude model.
 2. The `/vision` prompt contains **no** instruction to interpret, summarize, or contextualize. Verbatim only. That string is hashed.
 3. `/codegen` asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
 5. Index and query use the same `EMBED_MODEL`. Changing it means recreating the index and re-seeding.
-6. `/codegen` uses streaming.
+6. `/vision` is Gemini at `temperature=0`. `/explain` is Opus 5. `/codegen` is Sonnet 5 via streaming. Model IDs come from config, never hardcoded in a router.
 
 ---
 
 ## Decisions that are yours
 
-- **Determinism** of `/vision` — Sprint 2 Step 5.
+- **Transcription prompt** — how verbatim is verbatim (line breaks, LaTeX vs Unicode math). Sprint 2 Step 5.
 - **Embedding model** — `voyage-code-3` is the default; if prose-to-prose matching looks weak in Sprint 2, try `voyage-3.5` *before* the corpus is large (re-embedding is cheap now, expensive later).
 - **What "teach the method, not the answer" means** in the guardrails prompt.
 - **Storyboard bias** — the bad/good example pairs in `explain_*.md` that push toward motion over algebra.

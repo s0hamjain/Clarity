@@ -10,17 +10,17 @@ This file is the single point of entry for anyone — person or coding agent —
 
 A macOS menu-bar app for students. Press `⌘⇧E`, drag a box around any problem on your screen — a PDF, an IDE, a browser, a slide — and a translucent text box slides in. Type what's confusing you if you want (*"why is my binary search not working? visualize where it's messing up"*), or pick a recent screenshot, and press Enter. A floating result window shows a written, step-by-step explanation within seconds. About a minute later, a short animation made for that exact problem plays in the same window. Drag the window anywhere so it doesn't cover the problem; click X when you're done.
 
-The animation is generated, not looked up: an AI model writes [Manim](https://www.manim.community/) code for the problem, grounded in a library of verified working examples, and Clarity renders it.
+The animation is generated, not looked up: a model writes [Manim](https://www.manim.community/) code for the problem, grounded in a library of verified working examples, and Clarity renders it.
 
 If you haven't read [README.md](README.md) yet — especially the glossary — do that first. This file assumes those words.
 
 ### What happens when you press the hotkey
 
 1. The desktop app takes the screenshot and sends it (plus your text) to the **coordinator**, a Go server on your Mac. The coordinator creates a **job** and replies instantly with a job ID. The desktop app starts polling that job once a second.
-2. The coordinator asks the **agent service** (Python, the only thing that talks to Claude) to read the problem off the screenshot, word for word.
+2. The coordinator asks the **agent service** (Python, the only thing that talks to any AI model) to read the problem off the screenshot, word for word — that's **Gemini**, at `temperature=0` so the same problem always transcribes the same way.
 3. The coordinator fingerprints that text. If the same problem has been asked before, it returns the stored explanation and video — done in under a second.
-4. Otherwise it asks the agent service for a written explanation and a **storyboard**: 2–5 short scenes describing what the animation should show. **The explanation is saved the instant it arrives, and the result box shows it.** This is the moment the user stops waiting.
-5. For each scene, in parallel: the agent service finds the 3 most similar verified **snippets** from the example library (vector search in MongoDB Atlas), writes Manim code imitating them, and the **render pipeline** runs that code inside a locked-down Docker container. If the code crashes, the error goes back to the model and it tries again, up to 3 times. A scene that never works is dropped; the others carry on.
+4. Otherwise it asks the agent service (**Claude Opus 5**) for a written explanation and a **storyboard**: 2–5 short scenes describing what the animation should show. **The explanation is saved the instant it arrives, and the result box shows it.** This is the moment the user stops waiting.
+5. For each scene, in parallel: the agent service finds the 3 most similar verified **snippets** from the example library (vector search in MongoDB Atlas), writes Manim code imitating them (**Claude Sonnet 5**), and the **render pipeline** runs that code inside a locked-down Docker container. If the code crashes, the error goes back to the model and it tries again, up to 3 times. A scene that never works is dropped; the others carry on.
 6. Finished scenes are stitched into one video (no re-encoding), uploaded to S3, and the job is marked done. The result box plays it. Successful code is saved back into the library as an unverified example for a human to review.
 
 If rendering fails entirely, the job still finishes: the explanation stays on screen with a quiet "the animation didn't render this time." The explanation never depends on the video.
@@ -31,10 +31,11 @@ If rendering fails entirely, the job still finishes: the explanation stays on sc
 |---|---|---|
 | Desktop app | Python — `rumps` (menu bar), `pynput` (hotkey), `pywebview` (the two floating windows), PyInstaller → `.dmg` | Everything the user sees and installs |
 | Coordinator | Go, `net/http` | Job lifecycle, cache, calling the other parts in order, fanning scenes out in parallel |
-| Agent service | Python, FastAPI, `anthropic` SDK | Every Claude call: transcription, explanation, code, repair; plus the snippet library |
+| Agent service | Python, FastAPI, `google-genai` + `anthropic` SDKs | Every model call: transcription (Gemini), explanation (Opus 5), code + repair (Sonnet 5); plus the snippet library |
 | Render pipeline | Go + Docker + ffmpeg | Manim code → sandboxed render → repair loop → stitched MP4 on S3 |
 | MongoDB Atlas | Free M0 cluster | Jobs, cache, and the snippet library (with a vector-search index) |
-| Claude Opus 5 | Anthropic API | The model |
+| Gemini 3.8 Flash | Google Gemini API | Reads the screenshot (OCR), `temperature=0` |
+| Claude Opus 5 · Claude Sonnet 5 | Anthropic API | Explanation · Manim code and repair |
 | Voyage AI | `voyage-code-3` | Turns text into embeddings for vector search |
 | S3 (MinIO locally) | | Finished videos |
 
@@ -44,7 +45,7 @@ Four people, four roles, four directories, no overlap:
 
 | Role | Person | Directory | One sentence |
 |---|---|---|---|
-| AI | P1 | `agent/` | Make the model produce correct JSON: transcription, explanation, code, repair. |
+| AI | P1 | `agent/` | Make the models produce correct JSON: transcription (Gemini), explanation (Opus 5), code + repair (Sonnet 5). |
 | Render | P2 | `docker/`, `samples/`, `server/internal/render/` | Turn Manim code into an MP4 on S3, safely; write the verified example scenes. |
 | Backend | P3 | `server/` (rest) | Run the job: API, database, call P1 and P2 in order, report status. |
 | Desktop | P4 | `desktop/` | Everything the user sees and installs. |
@@ -98,7 +99,7 @@ Full environment setup: prerequisites, clone and branch strategy, Anthropic and 
 
 | Person | File | Role |
 |---|---|---|
-| P1 | [docs/P1_AI.md](docs/P1_AI.md) | The Python service that makes every Claude call |
+| P1 | [docs/P1_AI.md](docs/P1_AI.md) | The Python service that makes every model call (Gemini for OCR, Claude for explanation and code) |
 | P2 | [docs/P2_RENDER.md](docs/P2_RENDER.md) | Docker sandbox, Manim samples, video pipeline |
 | P3 | [docs/P3_BACKEND.md](docs/P3_BACKEND.md) | The Go coordinator: API, database, orchestration |
 | P4 | [docs/P4_DESKTOP.md](docs/P4_DESKTOP.md) | Menu-bar app, the two windows, the installer |
@@ -116,12 +117,12 @@ The complete directory tree with every file's purpose annotated, and the one-pat
 From FRD §23. Violations cause silent cache poisoning, hung jobs, broken concat output, or generated code running on the host.
 
 ### Agent service (P1)
-1. Every response uses structured outputs. Never parse prose for JSON. Never use assistant prefill. Never pass `temperature` to Opus 5.
+1. Every response is schema-enforced JSON (Claude `output_config.format`; Gemini `response_schema`). Never parse prose for JSON. Never use assistant prefill; never pass `temperature` to a Claude model.
 2. The `/vision` prompt contains no instruction to interpret, summarize, or contextualize. Verbatim only. This string is hashed.
 3. `/codegen` asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)` before returning.
 4. Retrieval filters on `verified: true` in every code path. No flag disables it.
 5. Index and query use the same `EMBED_MODEL`. Changing it means re-running the seed script against a recreated index.
-6. `/codegen` uses `client.messages.stream()` — output can be long.
+6. `/vision` is Gemini 3.8 Flash at `temperature=0`. `/explain` is Claude Opus 5. `/codegen` is Claude Sonnet 5 via `client.messages.stream()`.
 
 ### Coordinator (P3)
 7. `POST /api/jobs` writes the job and returns. Everything else runs in a goroutine with `defer recover()`.
@@ -178,7 +179,7 @@ Every task is specified in `docs/WORK_SPLIT.md`. This table is the index.
 
 | Sprint | Hours | Goal | P1 — Agent | P2 — Render | P3 — Coordinator | P4 — Desktop |
 |---|---|---|---|---|---|---|
-| **1 Foundation** | 0–3 | Every path runs on fakes; risky assumptions tested | Skeleton, Atlas + Voyage + Claude clients, real `/vision`, collision experiment | `manim-worker` image + container smoke test, 5 watched seed scenes, `precheck.go` | HTTP skeleton, Atlas job store with TTL indexes, fake status-walking worker, cache key + test | Permissions, `rumps` app, hotkey + `screencapture -i` + downscale, transparent-window spike, stub coordinator |
+| **1 Foundation** | 0–3 | Every path runs on fakes; risky assumptions tested | Skeleton; Gemini + Claude + Voyage + Atlas clients; real `/vision` on Gemini; collision experiment | `manim-worker` image + container smoke test, 5 watched seed scenes, `precheck.go` | HTTP skeleton, Atlas job store with TTL indexes, fake status-walking worker, cache key + test | Permissions, `rumps` app, hotkey + `screencapture -i` + downscale, transparent-window spike, stub coordinator |
 | **2 Vertical slice** | 3–7 | Real capture → real explanation in the real result box | `/explain`, seed script + `snippets_vector`, `/snippets/search`, `/snippets/ingest`, determinism decision | `Render()` against Docker with timeout + validation, semaphore, `render_test.go`, corpus to 20 | Agent client, real worker through `/explain` with immediate explanation write, cache hit path, fan-out skeleton | Spotlight box (translucent, frameless), result box with markdown + progress, real submit + notification, point at real coordinator |
 | **3 Real render** | 7–11 | One capture → real video, every codegen prompt grounded in retrieved snippets | `/codegen` with snippets, repair path, retrieval ablation | `RenderWithRepair`, `Concat` with mismatch guard, S3 upload | Real `SceneFunc`, concat → upload → cache → done, post-render ingest, real `/healthz` | Video playback, recents store + recents list in the spotlight box, reopen from local data, all failure states, guardrails toggle wired |
 | **4 Cache, guardrails, installer** | 11–15 | Survives real use; someone else can install it | Guardrails pass rate ≥ 8/10, promote/delete generated snippets, prompt tuning + `PromptVersion` | Cleanup on every exit path, timeout kills containers, `-qm` path, seeds for reported error classes | Two-machine cache test, failure injection, `503` on overload | Self-signed cert, `build_app.sh`, `build_dmg.sh`, install on a second Mac, permission persists across rebuild |

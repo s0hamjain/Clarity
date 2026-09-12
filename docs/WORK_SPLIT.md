@@ -7,7 +7,7 @@ This file is the **team-level** view: who does what, how the four pieces meet, h
 
 | Person | Role | Your file |
 |---|---|---|
-| **P1** | AI — the Python service that makes every Claude call | **[P1_AI.md](P1_AI.md)** |
+| **P1** | AI — the Python service that makes every model call (Gemini OCR, Claude explanation + code) | **[P1_AI.md](P1_AI.md)** |
 | **P2** | Render — Docker sandbox, Manim samples, video pipeline | **[P2_RENDER.md](P2_RENDER.md)** |
 | **P3** | Backend — the Go coordinator: API, database, orchestration | **[P3_BACKEND.md](P3_BACKEND.md)** |
 | **P4** | Desktop — the menu-bar app, the two windows, the installer | **[P4_DESKTOP.md](P4_DESKTOP.md)** |
@@ -56,7 +56,7 @@ Run together at the end of each sprint, after the merge. Each line names who dem
 
 ### Sprint 1
 1. **P2** — `docker run manim-worker` renders the `MathTex` smoke test to MP4. Five samples rendered and watched.
-2. **P1** — `/healthz` shows `anthropic`, `voyage`, `atlas` all `true`. One real `/vision` call returns verbatim text. Collision number: **N of 6**.
+2. **P1** — `/healthz` shows `gemini`, `anthropic`, `voyage`, `atlas` all `true`. One real `/vision` call returns verbatim text. Collision number: **N of 6**.
 3. **P3** — `POST /api/jobs` → job ID; polling walks through every status; the job is visible in Atlas with TTL indexes.
 4. **P4** — `python -m clarity --once` → crosshair → PNG under 8 MB. Transparency spike result recorded.
 5. **Captain (P3)** merges, tags `sprint-1`.

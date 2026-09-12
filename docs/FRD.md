@@ -676,7 +676,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | N3 | Cache hit < 1 s. |
 | N4 | Concurrent renders capped at `RENDER_CONCURRENCY`, default `NumCPU/2`. |
 | N5 | No scene can wedge another — per-container timeout, `defer recover()` per goroutine. |
-| N6 | Full stack runs on one laptop; no cloud dependency except Claude, Voyage, and Atlas. |
+| N6 | Full stack runs on one laptop; no cloud dependency except Gemini, Claude, Voyage, and Atlas. |
 | N7 | One command per service to start (§SETUP). |
 | N8 | Desktop app cold start < 2 s to menu bar icon. |
 
@@ -743,6 +743,9 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | `VISION_MODEL` | `gemini-3.8-flash` | |
 | `EXPLAIN_MODEL` | `claude-opus-5` | |
 | `CODEGEN_MODEL` | `claude-sonnet-5` | |
+| `VISION_MODEL` | `gemini-3.8-flash` | |
+| `EXPLAIN_MODEL` | `claude-opus-5` | |
+| `CODEGEN_MODEL` | `claude-sonnet-5` | |
 
 ### `server/.env`
 | Var | Default | Purpose |
@@ -770,12 +773,12 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 # 23. Key Implementation Rules
 
 ### Agent service
-1. Every response uses structured outputs. Never parse prose for JSON.
+1. Every response is schema-enforced JSON (Claude `output_config.format`; Gemini `response_schema`). Never parse prose for JSON.
 2. `/vision` prompt contains no instruction to interpret, summarize, or contextualize. Verbatim only.
 3. `scene_class` is asserted equal to `"GeneratedScene"` before returning from `/codegen`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
 5. Index and query use the same `EMBED_MODEL`. Changing it means re-running the seed script.
-6. Use `client.messages.stream()` for `/codegen`; do not use assistant prefill; do not pass `temperature` to Opus 5.
+6. `/vision` is Gemini at `temperature=0`. `/explain` is Opus 5, `/codegen` is Sonnet 5 via `client.messages.stream()`; never assistant prefill, never `temperature` on Claude.
 
 ### Coordinator
 7. `POST /api/jobs` writes the job and returns. Everything else is in a goroutine with `defer recover()`.
@@ -804,7 +807,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 
 | Question | Owner | Decide by |
 |---|---|---|
-| Does transcription collide often enough for the cache to matter? Run the six-capture experiment. | P1 | End of Sprint 1 |
+| Does Gemini at `temperature=0` transcribe the same problem identically across zoom/crop? Run the six-capture experiment. | P1 | End of Sprint 1 |
 | Does retrieval measurably reduce repair attempts? Compare 10 scenes with and without snippets. | P1 | End of Sprint 3 |
 | Does guardrails mode actually withhold the answer on real problems? | P1 | End of Sprint 4 |
 | Is `voyage-code-3` the right embedding model for prose→prose matching, or should it be `voyage-3.5`? | P1 | End of Sprint 2 (before the corpus is large) |

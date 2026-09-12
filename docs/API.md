@@ -171,7 +171,7 @@ Debugging and pre-warming checks. Not called by the desktop app.
 
 ## 3. Agent Service API
 
-Internal. Only the coordinator calls it. Every response body is produced with structured outputs — no prose, no fences. Every request carries `guardrails`.
+Internal. Only the coordinator calls it. Every response body is schema-enforced JSON — no prose, no fences. Models: `/vision` → Gemini 3.8 Flash at `temperature=0`; `/explain` → Claude Opus 5; `/codegen` → Claude Sonnet 5. Every request carries `guardrails`.
 
 ### 3.1 `POST /vision` — transcribe a screenshot
 
@@ -307,7 +307,7 @@ Any subset of `title`, `description`, `category`, `tags`, `verified`. Changing `
 ### 3.10 `GET /healthz`
 
 ```json
-{ "ok": true, "anthropic": true, "voyage": true, "atlas": true, "snippets_verified": 42, "embed_model": "voyage-code-3", "version": "0.1.0" }
+{ "ok": true, "gemini": true, "anthropic": true, "voyage": true, "atlas": true, "snippets_verified": 42, "models": { "vision": "gemini-3.8-flash", "explain": "claude-opus-5", "codegen": "claude-sonnet-5", "embed": "voyage-code-3" }, "version": "0.1.0" }
 ```
 
 ---
@@ -330,7 +330,7 @@ Every non-2xx response has this body:
 | 413 | `image_too_large` | coordinator | > 8 MB decoded. |
 | 415 | `unsupported_image_type` | coordinator | Not `image/png` or `image/jpeg`. |
 | 422 | `schema_violation` | agent | Model output failed schema validation after one retry. Coordinator treats as a failed attempt. |
-| 502 | `model_error` | agent | Anthropic returned an error. Retryable. |
+| 502 | `model_error` | agent | Gemini or Anthropic returned an error. `details.provider` says which. Retryable. |
 | 502 | `embedding_error` | agent | Voyage returned an error. Retryable. |
 | 503 | `queue_full` | coordinator | Bounded job queue is full. `Retry-After` set. |
 | 503 | `dependency_down` | coordinator | Atlas or agent unreachable. |
@@ -409,7 +409,8 @@ Desktop                Coordinator                    Agent                     
 | Coordinator → `/explain` | 45 s | Coordinator client |
 | Coordinator → `/snippets/search` | 10 s | Coordinator client |
 | Coordinator → `/codegen` | 90 s | Coordinator client |
-| Agent → Anthropic | 60 s per call, 1 retry on 5xx/429 | Agent |
+| Agent → Gemini (`/vision`) | 20 s, 1 retry on 5xx/429 | Agent |
+| Agent → Anthropic (`/explain`, `/codegen`) | 60 s per call, 1 retry on 5xx/429 | Agent |
 | Agent → Voyage | 10 s, 1 retry | Agent |
 | Per-scene container | 120 s | Coordinator, `docker kill` |
 | Repair attempts per scene | 3 | Coordinator |
