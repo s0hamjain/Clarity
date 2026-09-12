@@ -33,7 +33,13 @@ body {
   color: var(--text-dim);
 }
 
-.close {
+.header-buttons {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.header-button {
   width: 22px;
   height: 22px;
   border: none;
@@ -45,7 +51,7 @@ body {
   cursor: pointer;
 }
 
-.close:hover {
+.header-button:hover {
   background: var(--field);
   color: var(--text);
 }
@@ -172,6 +178,7 @@ body {
 }
 
 .video-wrap {
+  position: relative;
   margin-top: 14px;
 }
 
@@ -180,4 +187,25 @@ body {
   width: 100%;
   border-radius: 8px;
   background: #000;
+}
+
+/* Drag this out to the Finder, Messages, etc. to save the video — the same
+ * "DownloadURL" drag WebKit gives a browser attachment, so no native drag
+ * session or local download step is needed (result.js's dragstart handler). */
+.video-drag-handle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 4px 9px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  color: var(--text);
+  font-size: 11px;
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.video-drag-handle:active {
+  cursor: grabbing;
 }

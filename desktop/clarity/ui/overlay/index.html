@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Rule 20: nothing here comes from the network. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; style-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; connect-src 'none'" />
+    <title>Clarity</title>
+    <link rel="stylesheet" href="overlay.css" />
+  </head>
+  <body>
+    <div class="dim" id="dim"></div>
+    <div class="glow" id="glow"></div>
+    <script src="overlay.js"></script>
+  </body>
+</html>

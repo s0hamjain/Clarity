@@ -31,7 +31,9 @@
   var retryEl = document.getElementById("retry");
   var videoWrap = document.getElementById("video-wrap");
   var videoEl = document.getElementById("video");
+  var videoDragHandle = document.getElementById("video-drag-handle");
   var closeEl = document.getElementById("close");
+  var minimizeEl = document.getElementById("minimize");
 
   var state = {
     explained: false,
@@ -231,6 +233,25 @@
   }
 
   closeEl.addEventListener("click", close);
+  minimizeEl.addEventListener("click", function () {
+    api("minimize");
+  });
+
+  /* Drag the finished video out to the Finder, Messages, etc. "DownloadURL"
+   * is the same drag-out-of-the-browser mechanism Gmail/Mail use for
+   * attachments: WebKit downloads the URL itself once the drop lands
+   * somewhere, entirely outside this page's own fetch/XHR — no local
+   * download step or native drag session needed here. */
+  videoDragHandle.addEventListener("dragstart", function (event) {
+    var url = videoEl.currentSrc || videoEl.src;
+    if (!url) {
+      event.preventDefault();
+      return;
+    }
+    var filename = "clarity-" + (jobId || "video") + ".mp4";
+    event.dataTransfer.setData("DownloadURL", "video/mp4:" + filename + ":" + url);
+    event.dataTransfer.effectAllowed = "copy";
+  });
 
   /* The host closes the window through the same path as the X button, so a box
    * closed because the app is quitting still cancels a job in flight. */

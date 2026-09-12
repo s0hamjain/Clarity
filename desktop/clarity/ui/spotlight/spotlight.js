@@ -29,7 +29,7 @@
   var ROW_HEIGHT = 52;
   var LIST_PADDING = 12;
   var LIST_BORDER = 1;
-  var MAX_VISIBLE_ROWS = 8; /* FRD §15.1 */
+  var MAX_VISIBLE_ROWS = 3;
   var EMPTY_HEIGHT = 34;
 
   var baseHeight = 96;
@@ -172,15 +172,19 @@
 
   function applyFilter() {
     /* Typing with the list open filters by what the row shows — the problem
-     * text when the server has transcribed it, the question otherwise. */
+     * text when the server has transcribed it, the question otherwise. Only
+     * the most recent MAX_VISIBLE_ROWS survive — this is a quick way back to
+     * something you just captured, not a full history browser. */
     var term = input.value.trim().toLowerCase();
-    rows = recents.filter(function (row) {
-      if (!term) return true;
-      return (
-        (row.label || "").toLowerCase().indexOf(term) !== -1 ||
-        (row.question || "").toLowerCase().indexOf(term) !== -1
-      );
-    });
+    rows = recents
+      .filter(function (row) {
+        if (!term) return true;
+        return (
+          (row.label || "").toLowerCase().indexOf(term) !== -1 ||
+          (row.question || "").toLowerCase().indexOf(term) !== -1
+        );
+      })
+      .slice(0, MAX_VISIBLE_ROWS);
     selected = rows.length ? 0 : -1;
     render();
   }

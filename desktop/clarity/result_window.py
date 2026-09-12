@@ -166,6 +166,41 @@ class _JsApi:
             window_host.emit("cancel", job_id=self.job_id)
         self._destroy()
 
+    def minimize(self) -> None:
+        """Genie the box into the Dock.
+
+        This window's process runs as an accessory app (window_host.start's
+        docstring) precisely so a Dock icon never flashes just from opening a
+        capture — but a *miniaturized* window needs a Dock tile to animate
+        into and be restored from, so minimizing is the one action that
+        promotes this one process to a regular, Dock-visible app. That's a
+        one-way trip for the lifetime of this process, which is fine: it
+        already exists for exactly one result box, and promoting only
+        happens on an explicit click, never on every window open.
+        """
+        from PyObjCTools import AppHelper
+
+        def do_minimize() -> None:
+            try:
+                import AppKit
+
+                AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+                    AppKit.NSApplicationActivationPolicyRegular
+                )
+            except Exception:  # noqa: BLE001
+                log.debug("could not show a Dock icon to minimize into", exc_info=True)
+            if self.window is not None:
+                try:
+                    self.window.minimize()
+                except Exception:  # noqa: BLE001
+                    log.debug("could not minimize", exc_info=True)
+
+        # Deferred for the same reason overlay_window.py defers its native
+        # calls: PyObjC's void-argument AppKit setters crash if called
+        # straight from a bridge/delegate callback (confirmed empirically —
+        # see overlay_window.py's docstring for the repro).
+        AppHelper.callAfter(do_minimize)
+
     def explanation_shown(self) -> None:
         """First non-null explanation — the app posts a notification."""
         if not self._explained:

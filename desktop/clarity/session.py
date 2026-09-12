@@ -17,9 +17,11 @@ from typing import Any, Callable
 
 from . import capture as capture_mod
 from . import result_window
+from . import window_host
 from .capture import Capture
 from .client import ApiError, Client, Unreachable
 from .config import Config
+from .overlay_window import Overlay
 from .recents import Recents
 from .result_window import ResultBox
 from .spotlight_window import Spotlight
@@ -52,6 +54,9 @@ class Session:
 
         self._lock = threading.Lock()
         self._spotlight: Spotlight | None = None
+        # Full-screen dim + glow shown for as long as anything below is open
+        # (FRD §15.1's "the screen tells you Clarity is working" affordance).
+        self._overlay: Overlay | None = None
         # What the open spotlight box would submit. It changes when the user
         # picks a recent (FRD §16.5), so the submit reads it rather than
         # closing over the capture it was opened with.
@@ -69,16 +74,23 @@ class Session:
     def capture_and_ask(self) -> bool:
         """Region capture, then the spotlight box.
 
+        The overlay goes up before the crosshair even appears, not after: it
+        is excluded from screen capture itself (overlay_window.py), so it can
+        safely be on screen for the whole selection without ending up in the
+        image.
+
         Esc at the crosshair produces no capture. FRD §16.5 makes that the way
         into recents — but only when there is something to list, because a user
         who pressed Esc to back out shouldn't be handed an empty box.
         """
+        self._ensure_overlay()
         cap = capture_mod.capture_region()
         if cap is None:
             log.info("capture cancelled")
             if self.recents.list():
                 self.open_spotlight(None, expanded=True)
                 return True
+            self._close_overlay()
             return False
         log.info("captured %dx%d, %d bytes", cap.width, cap.height, cap.size_bytes)
         self.open_spotlight(cap)
@@ -91,6 +103,7 @@ class Session:
         the box opens with no thumbnail and the list already out, and it can't
         submit until the user picks a row.
         """
+        self._ensure_overlay()
         with self._lock:
             existing = self._spotlight
         if existing is not None and existing.alive:
@@ -170,6 +183,7 @@ class Session:
         recent_id: str | None = None,
     ) -> ResultBox:
         """Open a result box for a job. Boxes stack so several can stay open."""
+        self._ensure_overlay()
         with self._lock:
             box = result_window.stacked_box(self._last_box, anchor)
             self._last_box = box
@@ -310,8 +324,32 @@ class Session:
         self.open_result(new_id, recent_id=recent_id)
 
     def _idle(self) -> None:
+        self._close_overlay()
         if self._on_all_closed is not None:
             self._on_all_closed()
+
+    def _ensure_overlay(self) -> None:
+        """Open the dim + glow overlay if it isn't already up. Best-effort: a
+        window that fails to open is a missing visual flourish, not a reason
+        to stop the capture flow (FRD §23 rule 19)."""
+        with self._lock:
+            existing = self._overlay
+            if existing is not None and existing.alive:
+                return
+        try:
+            index, width, height = window_host.cursor_screen()
+            overlay = Overlay(index, width, height)
+        except Exception:  # noqa: BLE001
+            log.exception("could not open the overlay")
+            return
+        with self._lock:
+            self._overlay = overlay
+
+    def _close_overlay(self) -> None:
+        with self._lock:
+            overlay, self._overlay = self._overlay, None
+        if overlay is not None:
+            overlay.close()
 
     # -- housekeeping --------------------------------------------------------
 
@@ -324,10 +362,13 @@ class Session:
         with self._lock:
             windows = list(self._results.values())
             spotlight = self._spotlight
+            overlay = self._overlay
         for window in windows:
             window.close()
         if spotlight is not None:
             spotlight.close()
+        if overlay is not None:
+            overlay.close()
 
     def check_server(self) -> tuple[bool, str | None]:
         """`GET /healthz` for launch and the Server… menu item (API.md §2.6).

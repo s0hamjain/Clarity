@@ -4,10 +4,11 @@
 #
 #   cd desktop && source .venv/bin/activate && ./scripts/build_app.sh
 #
-# PyInstaller (one directory, wrapped in an .app), then LSUIElement so there is
-# no Dock icon, then a code signature — which is the whole point of the step:
-# macOS keys Screen Recording to the signature, so an unsigned build asks for
-# permission again on every rebuild.
+# PyInstaller (one directory, wrapped in an .app), then LSUIElement so a plain
+# `python -m clarity` or debug run doesn't flash a Dock icon before app.py's
+# own runtime code decides to show one, then a code signature — which is the
+# whole point of the step: macOS keys Screen Recording to the signature, so an
+# unsigned build asks for permission again on every rebuild.
 #
 # Identity: $CODESIGN_IDENTITY, else "Clarity Dev" (SETUP §11.1), else the only
 # codesigning identity in the keychain. Nothing suitable → the build finishes
@@ -77,7 +78,7 @@ plist_set() { # key type value
 }
 
 say "patching Info.plist"
-plist_set LSUIElement bool true            # menu bar only, no Dock icon (FRD §15.1)
+plist_set LSUIElement bool true            # app.py promotes to a Dock icon at launch
 plist_set CFBundleShortVersionString string "${VERSION}"
 plist_set CFBundleVersion string "${VERSION}"
 
@@ -120,7 +121,7 @@ say "done"
 du -sh "${APP}" | awk '{print "  " $2 "  " $1}'
 cat <<'EOF'
 
-  open dist/Clarity.app         menu bar icon, no Dock icon
+  open dist/Clarity.app         menu bar icon + Dock icon, both while it runs
   ⌘⇧E                           the spotlight box must still be translucent
                                 inside the bundle — it can differ from
                                 `python -m clarity` (FRD §24)

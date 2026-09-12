@@ -413,6 +413,8 @@ def run(kind: str) -> int:
         from .spotlight_window import run_window
     elif kind == "result":
         from .result_window import run_window
+    elif kind == "overlay":
+        from .overlay_window import run_window
     else:
         log.error("unknown window kind %r", kind)
         return 2

@@ -16,10 +16,18 @@ body {
 }
 
 /* Animate in: opacity 0→1, scale 0.96→1. The class goes on after first paint
- * so the transition actually runs (FRD §15.1). */
+ * so the transition actually runs (FRD §15.1).
+ *
+ * Lighter and more see-through than base.css's shared `.panel` — closer to
+ * real macOS Spotlight, which reads mostly through its background blur
+ * (`vibrancy=True` in spotlight_window.py) rather than a solid fill. A
+ * stronger shadow underneath is what keeps it feeling anchored/legible at
+ * this lower opacity instead of the fill's own darkness doing that job. */
 #panel {
   display: flex;
   flex-direction: column;
+  background: rgba(30, 30, 34, 0.55);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.35);
   opacity: 0;
   transform: scale(0.96);
   transition: opacity 180ms ease-out, transform 180ms ease-out;

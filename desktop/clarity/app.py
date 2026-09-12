@@ -40,6 +40,24 @@ class ClarityApp(rumps.App):
             quit_button=None,  # we add our own Quit so it sits last
         )
 
+        # The visible "Clarity is running" signal lives in the Dock, not the
+        # menu bar: a Dock icon carries the OS's own running indicator (the
+        # dot under the icon) for as long as this process is alive, without
+        # us drawing anything ourselves. LSUIElement in Info.plist still
+        # starts the app as an accessory (no Dock icon, no Cmd-Tab entry) so
+        # a plain `python -m clarity` or a debug run doesn't surprise anyone;
+        # this promotes it at launch. window_host.py's child processes
+        # (spotlight/result/overlay) explicitly do the opposite — they stay
+        # accessory — so only this one Dock icon ever appears.
+        try:
+            import AppKit
+
+            AppKit.NSApplication.sharedApplication().setActivationPolicy_(
+                AppKit.NSApplicationActivationPolicyRegular
+            )
+        except Exception:  # noqa: BLE001 — cosmetic; the app still runs from the menu bar
+            log.debug("could not show the Dock icon", exc_info=True)
+
         self._capturing = threading.Lock()
         self.session = Session(self.config, notify=self._notify, on_all_closed=self._on_idle)
         self._build_menu()

@@ -46,7 +46,7 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     # Not for people. The app re-runs itself with this to put each window in its
     # own process, because rumps and pywebview can't share a main thread
     # (clarity/window_host.py).
-    p.add_argument("--window-host", metavar="KIND", choices=("spotlight", "result"), help=argparse.SUPPRESS)
+    p.add_argument("--window-host", metavar="KIND", choices=("spotlight", "result", "overlay"), help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 

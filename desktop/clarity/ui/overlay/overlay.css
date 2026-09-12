@@ -1,0 +1,79 @@
+/* Full-screen dim + a colored border, shown while Clarity is actively
+ * working with the user (a spotlight box or a result box is open) — the same
+ * visual language as Apple Intelligence's screen-edge glow.
+ *
+ * The window itself is click-through (overlay_window.py sets
+ * ignoresMouseEvents on the native NSWindow), so this is purely visual and
+ * never gets in the way of the spotlight/result windows drawn above it, or
+ * of anything else on screen.
+ *
+ * Nothing here loads from the network (FRD §23 rule 20). */
+
+@property --angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+}
+
+.dim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+
+/* A colored ring exactly `--thickness` wide around the very edge of the
+ * screen: fill the box with a conic gradient centered on the screen, then cut
+ * out everything but a border-width band using the padding-box /
+ * content-box mask-composite trick. A conic gradient (not a linear one
+ * animated with background-position) is what makes the color genuinely sweep
+ * clockwise around the border, rather than just sliding sideways. */
+.glow {
+  --thickness: 7px;
+  position: fixed;
+  inset: 0;
+  padding: var(--thickness);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  background-image: conic-gradient(from var(--angle), #6fd1bd, #8f6fd1, #6fd1bd);
+  filter: blur(0.5px) saturate(1.3);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  animation: glow-spin 8s linear infinite;
+}
+
+@keyframes glow-spin {
+  to {
+    --angle: 360deg;
+  }
+}
+
+.dim.show {
+  opacity: 1;
+}
+
+.glow.show {
+  opacity: 0.9;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glow {
+    animation: none;
+  }
+}
