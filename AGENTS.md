@@ -154,7 +154,7 @@ Every task in WORK_SPLIT.md carries an FRD reference. Open it and read the secti
 ### Step 2 — Plan before you implement
 1. **Which files?** List them. Check File Ownership in WORK_SPLIT.md. If a file belongs to another path, coordinate first.
 2. **Inputs and outputs?** For an endpoint: request schema, response schema, status codes. For a Go function: signature from FRD §14.1. For the result box: which job fields it reads and which it writes back to the local recent.
-3. **Dependencies?** If another path's piece isn't ready, use the fake named in WORK_SPLIT.md → "What each path fakes." Do not wait.
+3. **Dependencies?** If another role's piece isn't ready, use the fake your own file names (P1_AI.md … P4_DESKTOP.md → "If you're blocked" and the sprint steps). Do not wait.
 4. **Failure modes?** FRD §19 lists them. Handle every one that applies.
 5. **Verification?** Define the check before writing. The sync-point checklist is the minimum.
 
