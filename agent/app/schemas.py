@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field
 class VisionRequest(BaseModel):
     image_b64: str = Field(..., description="Raw base64 string of screenshot")
     media_type: str = Field("image/png", description="MIME type e.g. image/png")
+    user_prompt: str = Field("", description="What the user typed about what they want to visualize or understand")
     guardrails: bool = Field(False, description="Guardrails flag")
 
 
 class VisionResponse(BaseModel):
-    problem_text: str = Field(..., description="Verbatim problem transcription")
+    problem_text: str = Field(..., description="Verbatim transcription, or a precise description of the image plus the user's stated task, when there is no text to transcribe")
     category: Literal["math", "algorithm", "unknown"] = Field(..., description="Problem category")
     confidence: float = Field(1.0, ge=0.0, le=1.0, description="Confidence score")
 
@@ -41,10 +42,15 @@ class ExplainResponse(BaseModel):
     revisions: int = 0
 
 
-# --- Manim Generator / Scenes ---
-class SceneRenderRequest(BaseModel):
+# --- Manim Generator ---
+# One call renders the whole storyboard as a single continuous script, not
+# one call per scene. Per-scene calls produced visibly disjoint videos: each
+# scene was written with no knowledge of the previous scene's final frame, so
+# consecutive scenes routinely re-drew the same objects from scratch, which
+# plays back as the animation restarting every few seconds.
+class RenderRequest(BaseModel):
     job_id: str
-    scene: Scene
+    scenes: list[Scene]
     storyboard_title: str
     category: str
     guardrails: bool = False
@@ -52,7 +58,7 @@ class SceneRenderRequest(BaseModel):
     quality: str = "-ql"
 
 
-class SceneRenderResponse(BaseModel):
+class RenderResponse(BaseModel):
     ok: bool
     clip_path: Optional[str] = None
     attempts: int = 1
@@ -114,9 +120,10 @@ class SnippetPatchRequest(BaseModel):
 
 
 class SnippetSearchRequest(BaseModel):
-    scene: Scene
+    scenes: list[Scene]
+    storyboard_title: str = ""
     category: str
-    k: int = 3
+    k: int = 6
     hint: str = ""
 
 
@@ -139,7 +146,8 @@ class CodegenSnippet(BaseModel):
 
 
 class CodegenRequest(BaseModel):
-    scene: Scene
+    scenes: list[Scene]
+    storyboard_title: str = ""
     snippets: list[CodegenSnippet] = []
     previous_source: Optional[str] = None
     traceback: Optional[str] = None

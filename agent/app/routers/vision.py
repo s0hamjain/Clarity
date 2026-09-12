@@ -13,6 +13,7 @@ async def vision_intake(req: VisionRequest):
             image_b64=req.image_b64,
             media_type=req.media_type,
             guardrails=req.guardrails,
+            user_prompt=req.user_prompt,
         )
         return result
     except Exception as e:

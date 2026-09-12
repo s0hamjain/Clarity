@@ -11,7 +11,7 @@ import (
 // PromptVersion is part of every cache key. Bump it in the same commit as any
 // prompt change in any component (FRD §23 rule 13) — otherwise the cache keeps
 // serving results produced by the old prompt.
-const PromptVersion = "2026-09-12b"
+const PromptVersion = "2026-09-12e"
 
 // Normalize lowercases, trims, and collapses every whitespace run (including
 // newlines and tabs) to a single space. Nothing else. This is the only defense

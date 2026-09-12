@@ -11,46 +11,41 @@ import (
 	"github.com/s0hamjain/Clarity/server/internal/config"
 )
 
-// AgentSceneFunc renders one scene by handing it to the Manim Generator agent.
+// AgentRenderFunc renders the whole storyboard by handing it to the Manim
+// Generator agent in one call.
 //
-// The agent owns the whole loop for that scene — retrieve, generate, lint,
-// render, repair, up to three attempts — and calls back into the coordinator's
-// /internal/render to do the rendering. One HTTP call per scene, with the
-// 11-minute budget from API.md §7 taken from the job's context, so cancelling
-// the job aborts the call.
-//
-// A scene that does not work out is dropped, never the job (FRD §23 rule 16),
-// so every failure path here returns ok:false rather than an error.
-func AgentSceneFunc(
+// The agent owns the whole loop — retrieve, generate, lint, render, repair,
+// up to three attempts — over one continuous script covering every beat, and
+// calls back into the coordinator's /internal/render to do the rendering. One
+// HTTP call per job, with the 11-minute budget from API.md §7 taken from the
+// job's context, so cancelling the job aborts the call.
+func AgentRenderFunc(
 	client *agent.Client,
 	cfg *config.Config,
 	jobID string,
 	storyboardTitle, category string,
 	guardrails bool,
-) SceneFunc {
-	return func(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
-		// job_id + scene is the agent's thread_id, so its graph logs and these
-		// join on the same key.
-		log := slog.With("job_id", jobID, "scene", scene.Index,
-			"request_id", agent.RequestIDFrom(ctx))
+) RenderFunc {
+	return func(ctx context.Context, scenes []agent.Scene, workDir string) (string, bool) {
+		// job_id is the agent's thread_id, so its graph logs and these join on
+		// the same key.
+		log := slog.With("job_id", jobID, "request_id", agent.RequestIDFrom(ctx))
 
-		resp, err := client.ScenesRender(ctx, agent.SceneRenderRequest{
+		resp, err := client.Render(ctx, agent.RenderRequest{
 			JobID:           jobID,
-			Scene:           scene,
+			Scenes:          scenes,
 			StoryboardTitle: storyboardTitle,
 			Category:        category,
 			Guardrails:      guardrails,
 			WorkDir:         workDir,
-			// One job-level quality value for every scene (rule 12); concat
-			// with -c copy depends on every clip matching.
-			Quality: cfg.ManimQuality,
+			Quality:         cfg.ManimQuality,
 		})
 		if err != nil {
-			log.Error("scene render call failed", "error", err)
+			log.Error("render call failed", "error", err)
 			return "", false
 		}
 		if !resp.OK {
-			log.Warn("agent gave up on this scene",
+			log.Warn("agent gave up on the render",
 				"attempts", resp.Attempts, "lint_retries", resp.LintRetries,
 				"stage", resp.Stage, "traceback", firstLine(resp.LastTraceback))
 			return "", false
@@ -62,7 +57,7 @@ func AgentSceneFunc(
 			return "", false
 		}
 
-		log.Info("scene rendered",
+		log.Info("render finished",
 			"attempts", resp.Attempts, "lint_retries", resp.LintRetries,
 			"snippets_used", len(resp.SnippetsUsed), "snippet_id", resp.SnippetID)
 		return clipPath, true
@@ -70,10 +65,10 @@ func AgentSceneFunc(
 }
 
 // validClip checks the path the agent handed back before anything reads it.
-// The clip must sit inside the scene's own work dir and actually exist: the
-// path is fed to ffmpeg, so it gets the same containment treatment work_dir
-// gets in /internal/render, and a success pointing at a missing file has to be
-// caught here rather than by a confusing concat failure later.
+// The clip must sit inside the job's own work dir and actually exist: the
+// path is fed to the uploader, so it gets the same containment treatment
+// work_dir gets in /internal/render, and a success pointing at a missing file
+// has to be caught here rather than by a confusing upload failure later.
 func validClip(clipPath, workDir string) (string, bool) {
 	if clipPath == "" {
 		return "", false

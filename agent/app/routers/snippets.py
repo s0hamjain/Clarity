@@ -187,7 +187,8 @@ async def delete_snippet(snippet_id: str):
 async def search_snippets(req: SnippetSearchRequest):
     """POST /snippets/search - Debug route to test snippet retrieval."""
     try:
-        query_text = f"{req.scene.narration} {req.scene.visual} {req.hint}".strip()
+        beats = " ".join(f"{s.narration} {s.visual}" for s in req.scenes)
+        query_text = f"{req.storyboard_title} {beats} {req.hint}".strip()
         r = retriever(req.category, k=req.k)
         docs = r.invoke(query_text)
         results = []

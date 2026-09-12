@@ -13,20 +13,23 @@ import (
 )
 
 // Worker drives one job from a screenshot to a video: transcribe, fingerprint,
-// check the cache, explain, fan the scenes out, stitch, upload, done.
+// check the cache, explain, render the whole storyboard as one continuous
+// script, upload, done.
 type Worker struct {
 	cfg   *config.Config
 	jobs  Store
 	cache CacheStore
 	agent *agent.Client
 
-	// concat is P2's render.Concat (FRD §14.1): it stitches the clips and
-	// uploads the result, returning the public URL.
+	// concat is P2's render.Concat (FRD §14.1): a no-op join for the one clip
+	// this job produced, then upload, returning the public URL. Kept under
+	// this name so the upload path doesn't special-case the common case of
+	// exactly one clip.
 	concat ConcatFunc
 
-	// renderScene, when set, overrides how a scene becomes a clip. Only tests
-	// set it; a real job gets its SceneFunc from sceneFunc below.
-	renderScene SceneFunc
+	// renderFunc, when set, overrides how the storyboard becomes a clip. Only
+	// tests set it; a real job gets its RenderFunc from renderFuncFor below.
+	renderFunc RenderFunc
 
 	mu      sync.Mutex
 	running map[string]*jobCtl
@@ -71,12 +74,12 @@ func NewWorker(cfg *config.Config, j Store, c CacheStore, a *agent.Client, conca
 // many jobs as it is willing to. The caller turns it into 503 queue_full.
 var ErrQueueFull = errors.New("job queue is full")
 
-// sceneFunc decides how this job's scenes become clips.
-func (w *Worker) sceneFunc(j *Job, storyboardTitle, category string) SceneFunc {
-	if w.renderScene != nil {
-		return w.renderScene // test override
+// renderFuncFor decides how this job's storyboard becomes a clip.
+func (w *Worker) renderFuncFor(j *Job, storyboardTitle, category string) RenderFunc {
+	if w.renderFunc != nil {
+		return w.renderFunc // test override
 	}
-	return AgentSceneFunc(w.agent, w.cfg, j.ID, storyboardTitle, category, j.Guardrails)
+	return AgentRenderFunc(w.agent, w.cfg, j.ID, storyboardTitle, category, j.Guardrails)
 }
 
 // Start runs the pipeline for one job in its own goroutine and returns at once.
@@ -167,10 +170,10 @@ func (w *Worker) forget(id string) {
 
 // Job-level failure codes (API.md §4).
 const (
-	ErrNoProblemFound  = "no_problem_found"
-	ErrExplainFailed   = "explain_failed"
-	ErrInternal        = "internal"
-	ErrAllScenesFailed = "all_scenes_failed"
+	ErrNoProblemFound = "no_problem_found"
+	ErrExplainFailed  = "explain_failed"
+	ErrInternal       = "internal"
+	ErrRenderFailed   = "render_failed"
 )
 
 // run is the pipeline for one job.
@@ -185,7 +188,7 @@ func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 	if !w.setStatus(ctx, j.ID, StatusTranscribing) {
 		return
 	}
-	vision, err := w.transcribe(ctx, imageB64, mediaType, j.Guardrails)
+	vision, err := w.transcribe(ctx, imageB64, mediaType, j.UserPrompt, j.Guardrails)
 	if err != nil {
 		if ctx.Err() != nil {
 			return // cancelled; Cancel owns the status
@@ -262,38 +265,30 @@ func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 	log.Info("explanation written",
 		"problem_hash", hash, "scenes_total", len(scenes), "revisions", explained.Revisions)
 
-	// --- rendering: every scene at once ---
+	// --- rendering: one continuous script for the whole storyboard ---
 	if !w.setStatus(ctx, j.ID, StatusRendering) {
 		return
 	}
-	clips := w.fanOut(ctx, j.ID, scenes, w.sceneFunc(j, explained.Storyboard.Title, vision.Category), func(done int) {
-		w.update(ctx, j.ID, Fields{"scenes_done": done})
-	})
+	clipPath, ok := w.renderStoryboard(ctx, j.ID, scenes, w.renderFuncFor(j, explained.Storyboard.Title, vision.Category))
 	if ctx.Err() != nil {
 		return
 	}
-	log.Info("scenes finished", "surviving", len(clips), "total", len(scenes))
-
-	// --- concatenating, uploading ---
-	if !w.setStatus(ctx, j.ID, StatusConcatenating) {
-		return
-	}
-	if len(clips) == 0 {
-		// The explanation survives; the animation quietly did not. Not a
+	if !ok {
+		// The explanation survives; the animation quietly did not. Not a job
 		// failure, and nothing is cached.
-		log.Warn("every scene was dropped; finishing without a video")
-		w.update(ctx, j.ID, Fields{"status": StatusDone, "video_url": nil, "error": ErrAllScenesFailed})
+		log.Warn("render did not work out; finishing without a video")
+		w.update(ctx, j.ID, Fields{"status": StatusDone, "video_url": nil, "error": ErrRenderFailed})
 		return
 	}
+	log.Info("render finished")
 
-	// Concat does the upload too, so it runs under `concatenating`; `uploading`
-	// is set afterwards, and exists for the UI.
-	videoURL, err := w.concatAndUpload(ctx, clips, hash)
+	// --- uploading ---
+	videoURL, err := w.upload(ctx, clipPath, hash)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Error("concat or upload failed", "error", err)
+		log.Error("upload failed", "error", err)
 		w.update(ctx, j.ID, Fields{"status": StatusDone, "video_url": nil, "error": ErrInternal})
 		return
 	}
@@ -315,19 +310,19 @@ func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 
 // --- the three swappable steps -------------------------------------------
 
-func (w *Worker) transcribe(ctx context.Context, imageB64, mediaType string, guardrails bool) (*agent.VisionResponse, error) {
-	return w.agent.Vision(ctx, imageB64, mediaType, guardrails)
+func (w *Worker) transcribe(ctx context.Context, imageB64, mediaType, userPrompt string, guardrails bool) (*agent.VisionResponse, error) {
+	return w.agent.Vision(ctx, imageB64, mediaType, userPrompt, guardrails)
 }
 
 func (w *Worker) explain(ctx context.Context, req agent.ExplainRequest) (*agent.ExplainResponse, error) {
 	return w.agent.Explain(ctx, req)
 }
 
-// concatAndUpload stitches the surviving clips into one video and uploads it,
-// returning the public URL. Both halves are P2's render.Concat; the key is the
-// problem hash, so the same problem always lands at the same object.
-func (w *Worker) concatAndUpload(ctx context.Context, clips []string, hash string) (string, error) {
-	return w.concat(ctx, clips, "renders/"+hash+".mp4")
+// upload hands the one clip to P2's render.Concat, which joins it (a no-op
+// for a single input) and uploads it, returning the public URL. The key is
+// the problem hash, so the same problem always lands at the same object.
+func (w *Worker) upload(ctx context.Context, clipPath, hash string) (string, error) {
+	return w.concat(ctx, []string{clipPath}, "renders/"+hash+".mp4")
 }
 
 // --- job record helpers ---------------------------------------------------

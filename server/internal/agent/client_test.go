@@ -49,7 +49,7 @@ func TestVisionSendsRawBase64(t *testing.T) {
 	defer srv.Close()
 
 	ctx := WithRequestID(context.Background(), "req_abc")
-	resp, err := New(srv.URL).Vision(ctx, "data:image/png;base64,AAAA", "", false)
+	resp, err := New(srv.URL).Vision(ctx, "data:image/png;base64,AAAA", "", "model topological sort on this graph", false)
 	if err != nil {
 		t.Fatalf("Vision: %v", err)
 	}
@@ -58,6 +58,9 @@ func TestVisionSendsRawBase64(t *testing.T) {
 	}
 	if got.MediaType != "image/png" {
 		t.Errorf("media_type = %q, want it taken from the data URL", got.MediaType)
+	}
+	if got.UserPrompt != "model topological sort on this graph" {
+		t.Errorf("user_prompt = %q, want it sent faithfully", got.UserPrompt)
 	}
 	if resp.ProblemText != "d/dx [x^2 sin x]" || resp.Category != CategoryMath {
 		t.Errorf("response not decoded: %+v", resp)
@@ -71,7 +74,7 @@ func TestVisionUnknownIsNotAnError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	resp, err := New(srv.URL).Vision(context.Background(), "AAAA", "image/png", false)
+	resp, err := New(srv.URL).Vision(context.Background(), "AAAA", "image/png", "", false)
 	if err != nil {
 		t.Fatalf("unknown must not be an error: %v", err)
 	}
@@ -108,16 +111,16 @@ func TestExplainRoundTrip(t *testing.T) {
 	}
 }
 
-// ok:false is data, not an error — the caller drops that scene.
-func TestScenesRenderOKFalseIsNotAnError(t *testing.T) {
+// ok:false is data, not an error — the caller finishes the job without a video.
+func TestRenderOKFalseIsNotAnError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(SceneRenderResponse{
+		_ = json.NewEncoder(w).Encode(RenderResponse{
 			OK: false, Attempts: 3, LintRetries: 4, Stage: "render", LastTraceback: "NameError",
 		})
 	}))
 	defer srv.Close()
 
-	resp, err := New(srv.URL).ScenesRender(context.Background(), SceneRenderRequest{JobID: "j_1"})
+	resp, err := New(srv.URL).Render(context.Background(), RenderRequest{JobID: "j_1"})
 	if err != nil {
 		t.Fatalf("ok:false must not be a transport error: %v", err)
 	}
@@ -127,22 +130,22 @@ func TestScenesRenderOKFalseIsNotAnError(t *testing.T) {
 }
 
 // The quality flag is job-level and must reach the agent unchanged (rule 12).
-func TestScenesRenderPassesQualityThrough(t *testing.T) {
-	var got SceneRenderRequest
+func TestRenderPassesQualityThrough(t *testing.T) {
+	var got RenderRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&got)
-		_ = json.NewEncoder(w).Encode(SceneRenderResponse{OK: true, ClipPath: "/tmp/x.mp4"})
+		_ = json.NewEncoder(w).Encode(RenderResponse{OK: true, ClipPath: "/tmp/x.mp4"})
 	}))
 	defer srv.Close()
 
-	_, err := New(srv.URL).ScenesRender(context.Background(), SceneRenderRequest{
-		JobID: "j_1", Quality: "-qm", WorkDir: "/tmp/clarity/j_1/scene0",
-		Scene: Scene{Index: 0, Narration: "n", Visual: "v"},
+	_, err := New(srv.URL).Render(context.Background(), RenderRequest{
+		JobID: "j_1", Quality: "-qm", WorkDir: "/tmp/clarity/j_1",
+		Scenes: []Scene{{Index: 0, Narration: "n", Visual: "v"}},
 	})
 	if err != nil {
-		t.Fatalf("ScenesRender: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
-	if got.Quality != "-qm" || got.WorkDir != "/tmp/clarity/j_1/scene0" {
+	if got.Quality != "-qm" || got.WorkDir != "/tmp/clarity/j_1" {
 		t.Errorf("request not sent faithfully: %+v", got)
 	}
 }
@@ -232,7 +235,7 @@ func TestCancelAbortsTheRequest(t *testing.T) {
 // An unreachable agent is a transport error, never a panic or a hang.
 func TestUnreachableAgent(t *testing.T) {
 	// Port 1 is reserved and refuses connections immediately.
-	_, err := New("http://127.0.0.1:1").Vision(context.Background(), "AAAA", "image/png", false)
+	_, err := New("http://127.0.0.1:1").Vision(context.Background(), "AAAA", "image/png", "", false)
 	if err == nil {
 		t.Fatal("want an error from an unreachable agent")
 	}

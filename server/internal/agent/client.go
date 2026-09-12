@@ -22,9 +22,9 @@ const (
 	// 5xx/429 = 40s worst case (API.md §7). 30s was less than that, so a slow
 	// Gemini call timed out here first and surfaced as a generic internal
 	// error instead of the agent's real model_error.
-	VisionTimeout       = 45 * time.Second
-	ExplainTimeout      = 90 * time.Second
-	ScenesRenderTimeout = 11 * time.Minute
+	VisionTimeout  = 45 * time.Second
+	ExplainTimeout = 90 * time.Second
+	RenderTimeout  = 11 * time.Minute
 )
 
 // Problem categories returned by /vision.
@@ -52,8 +52,13 @@ func New(baseURL string) *Client {
 // --- /vision (API.md §3.1) ------------------------------------------------
 
 type VisionRequest struct {
-	ImageB64   string `json:"image_b64"`
-	MediaType  string `json:"media_type"`
+	ImageB64  string `json:"image_b64"`
+	MediaType string `json:"media_type"`
+	// UserPrompt is what the user typed about what they want to visualize or
+	// understand. The intake step needs it: a screenshot of a bare diagram
+	// (a graph with no written problem on it, say) has no "problem" to OCR,
+	// and only the user's own words say what to do with it.
+	UserPrompt string `json:"user_prompt"`
 	Guardrails bool   `json:"guardrails"`
 }
 
@@ -70,7 +75,7 @@ type VisionResponse struct {
 //
 // A response of category "unknown" with empty text is a valid 200, not an
 // error — the caller turns it into failed / no_problem_found.
-func (c *Client) Vision(ctx context.Context, image, mediaType string, guardrails bool) (*VisionResponse, error) {
+func (c *Client) Vision(ctx context.Context, image, mediaType, userPrompt string, guardrails bool) (*VisionResponse, error) {
 	b64, detected := StripDataURL(image)
 	if detected != "" {
 		mediaType = detected
@@ -83,6 +88,7 @@ func (c *Client) Vision(ctx context.Context, image, mediaType string, guardrails
 	err := c.do(ctx, VisionTimeout, "/vision", VisionRequest{
 		ImageB64:   b64,
 		MediaType:  mediaType,
+		UserPrompt: userPrompt,
 		Guardrails: guardrails,
 	}, &out)
 	if err != nil {
@@ -129,21 +135,19 @@ func (c *Client) Explain(ctx context.Context, req ExplainRequest) (*ExplainRespo
 	return &out, nil
 }
 
-// --- /scenes/render (API.md §3.3) -----------------------------------------
+// --- /render (API.md §3.3) -------------------------------------------------
 
-type SceneRenderRequest struct {
-	JobID           string `json:"job_id"`
-	Scene           Scene  `json:"scene"`
-	StoryboardTitle string `json:"storyboard_title"`
-	Category        string `json:"category"`
-	Guardrails      bool   `json:"guardrails"`
-	WorkDir         string `json:"work_dir"`
-	// Quality is the job-level manim flag, passed through unchanged to every
-	// scene (FRD §23 rule 12) — concat with -c copy depends on it.
-	Quality string `json:"quality"`
+type RenderRequest struct {
+	JobID           string  `json:"job_id"`
+	Scenes          []Scene `json:"scenes"`
+	StoryboardTitle string  `json:"storyboard_title"`
+	Category        string  `json:"category"`
+	Guardrails      bool    `json:"guardrails"`
+	WorkDir         string  `json:"work_dir"`
+	Quality         string  `json:"quality"`
 }
 
-type SceneRenderResponse struct {
+type RenderResponse struct {
 	OK            bool     `json:"ok"`
 	ClipPath      string   `json:"clip_path"`
 	Attempts      int      `json:"attempts"`
@@ -154,12 +158,13 @@ type SceneRenderResponse struct {
 	LastTraceback string   `json:"last_traceback"`
 }
 
-// ScenesRender runs the Manim Generator agent for one scene. A 200 with
-// ok:false is the normal "this scene didn't work out" result, not an error —
-// the caller drops that scene and keeps the job going.
-func (c *Client) ScenesRender(ctx context.Context, req SceneRenderRequest) (*SceneRenderResponse, error) {
-	var out SceneRenderResponse
-	if err := c.do(ctx, ScenesRenderTimeout, "/scenes/render", req, &out); err != nil {
+// Render runs the Manim Generator agent over the whole storyboard as one
+// continuous script (see FRD §10.4 for why this is one call, not one per
+// scene). A 200 with ok:false is the normal "this render didn't work out"
+// result, not an error — the caller finishes the job without a video.
+func (c *Client) Render(ctx context.Context, req RenderRequest) (*RenderResponse, error) {
+	var out RenderResponse
+	if err := c.do(ctx, RenderTimeout, "/render", req, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

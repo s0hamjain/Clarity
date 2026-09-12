@@ -77,7 +77,7 @@ func TestPromptVersionIsInTheKey(t *testing.T) {
 	if PromptVersion == "" {
 		t.Fatal("PromptVersion must not be empty")
 	}
-	want := "7fc78840b9ea7554"
+	want := "185401d9d160172a"
 	if got := Hash("integrate x^2 dx", "", false); got != want {
 		t.Errorf("golden hash changed to %q; if PromptVersion was bumped on purpose, update this constant to %q", got, got)
 	}

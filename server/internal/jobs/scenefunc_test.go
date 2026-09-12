@@ -40,30 +40,30 @@ func writeClip(t *testing.T, workDir, name string) string {
 	return p
 }
 
-func TestAgentSceneFuncSuccess(t *testing.T) {
-	workDir := filepath.Join(t.TempDir(), "scene0")
-	clip := writeClip(t, workDir, "scene0.mp4")
+func TestAgentRenderFuncSuccess(t *testing.T) {
+	workDir := t.TempDir()
+	clip := writeClip(t, workDir, "output.mp4")
 
-	var got agent.SceneRenderRequest
+	var got agent.RenderRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/scenes/render" {
+		if r.URL.Path != "/render" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&got)
-		_ = json.NewEncoder(w).Encode(agent.SceneRenderResponse{
+		_ = json.NewEncoder(w).Encode(agent.RenderResponse{
 			OK: true, ClipPath: clip, Attempts: 2, LintRetries: 1,
 			SnippetsUsed: []string{"a", "b"}, SnippetID: "66f9",
 		})
 	}))
 	defer srv.Close()
 
-	fn := AgentSceneFunc(agent.New(srv.URL), sceneTestConfig(t, srv.URL),
+	fn := AgentRenderFunc(agent.New(srv.URL), sceneTestConfig(t, srv.URL),
 		"j_abc", "Binary Search", agent.CategoryAlgorithm, true)
 
-	scene := agent.Scene{Index: 0, Narration: "n", Visual: "v", DurationSeconds: 8}
-	path, ok := fn(context.Background(), scene, workDir)
+	scenes := []agent.Scene{{Index: 0, Narration: "n", Visual: "v", DurationSeconds: 8}}
+	path, ok := fn(context.Background(), scenes, workDir)
 	if !ok {
-		t.Fatal("a successful scene was reported as dropped")
+		t.Fatal("a successful render was reported as failed")
 	}
 	if path != clip {
 		t.Errorf("clip path = %q, want %q", path, clip)
@@ -78,15 +78,15 @@ func TestAgentSceneFuncSuccess(t *testing.T) {
 	if got.Quality != "-qm" {
 		t.Errorf("quality = %q, want the job-level -qm", got.Quality)
 	}
-	if got.WorkDir != workDir || got.Scene.Index != 0 {
-		t.Errorf("work_dir/scene not sent faithfully: %+v", got)
+	if got.WorkDir != workDir || len(got.Scenes) != 1 || got.Scenes[0].Index != 0 {
+		t.Errorf("work_dir/scenes not sent faithfully: %+v", got)
 	}
 }
 
-// Every way a scene can fail drops that scene and nothing else.
-func TestAgentSceneFuncDropsBadScenes(t *testing.T) {
-	workDir := filepath.Join(t.TempDir(), "scene0")
-	realClip := writeClip(t, workDir, "scene0.mp4")
+// Every way a render can fail reports ok:false and nothing else.
+func TestAgentRenderFuncRejectsBadRenders(t *testing.T) {
+	workDir := t.TempDir()
+	realClip := writeClip(t, workDir, "output.mp4")
 	outside := filepath.Join(t.TempDir(), "elsewhere.mp4")
 	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -104,21 +104,21 @@ func TestAgentSceneFuncDropsBadScenes(t *testing.T) {
 		comment string
 	}{
 		{name: "agent gave up", status: 200,
-			body: agent.SceneRenderResponse{OK: false, Attempts: 3, Stage: "render", LastTraceback: "NameError: x\nmore"}},
+			body: agent.RenderResponse{OK: false, Attempts: 3, Stage: "render", LastTraceback: "NameError: x\nmore"}},
 		{name: "agent 502", status: 502, body: map[string]any{"error": map[string]string{"code": "model_error"}}},
-		{name: "empty clip_path", status: 200, body: agent.SceneRenderResponse{OK: true, ClipPath: ""}},
+		{name: "empty clip_path", status: 200, body: agent.RenderResponse{OK: true, ClipPath: ""}},
 		{name: "clip that does not exist", status: 200,
-			body: agent.SceneRenderResponse{OK: true, ClipPath: filepath.Join(workDir, "nope.mp4")}},
-		{name: "zero-byte clip", status: 200, body: agent.SceneRenderResponse{OK: true, ClipPath: empty}},
+			body: agent.RenderResponse{OK: true, ClipPath: filepath.Join(workDir, "nope.mp4")}},
+		{name: "zero-byte clip", status: 200, body: agent.RenderResponse{OK: true, ClipPath: empty}},
 		{name: "clip outside the work dir", status: 200,
-			body: agent.SceneRenderResponse{OK: true, ClipPath: outside}},
+			body: agent.RenderResponse{OK: true, ClipPath: outside}},
 		{name: "relative clip path", status: 200,
-			body: agent.SceneRenderResponse{OK: true, ClipPath: "scene0.mp4"}},
+			body: agent.RenderResponse{OK: true, ClipPath: "output.mp4"}},
 		{name: "traversal out of the work dir", status: 200,
-			body: agent.SceneRenderResponse{OK: true, ClipPath: filepath.Join(workDir, "..", "..", "etc", "passwd")}},
+			body: agent.RenderResponse{OK: true, ClipPath: filepath.Join(workDir, "..", "..", "etc", "passwd")}},
 		// The one that must succeed, so the table is not vacuously passing.
 		{name: "a real clip in the work dir", status: 200,
-			body: agent.SceneRenderResponse{OK: true, ClipPath: realClip}, wantOK: true},
+			body: agent.RenderResponse{OK: true, ClipPath: realClip}, wantOK: true},
 	}
 
 	for _, tc := range cases {
@@ -129,9 +129,9 @@ func TestAgentSceneFuncDropsBadScenes(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			fn := AgentSceneFunc(agent.New(srv.URL), sceneTestConfig(t, srv.URL),
+			fn := AgentRenderFunc(agent.New(srv.URL), sceneTestConfig(t, srv.URL),
 				"j_abc", "T", agent.CategoryAlgorithm, false)
-			_, ok := fn(context.Background(), agent.Scene{Index: 0}, workDir)
+			_, ok := fn(context.Background(), []agent.Scene{{Index: 0}}, workDir)
 			if ok != tc.wantOK {
 				t.Errorf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -139,9 +139,9 @@ func TestAgentSceneFuncDropsBadScenes(t *testing.T) {
 	}
 }
 
-// Cancelling the job must abort the scene's agent call rather than waiting out
-// the 11-minute budget.
-func TestAgentSceneFuncHonoursCancellation(t *testing.T) {
+// Cancelling the job must abort the render's agent call rather than waiting
+// out the 11-minute budget.
+func TestAgentRenderFuncHonoursCancellation(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,13 +157,13 @@ func TestAgentSceneFuncHonoursCancellation(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	fn := AgentSceneFunc(agent.New(srv.URL), sceneTestConfig(t, srv.URL),
+	fn := AgentRenderFunc(agent.New(srv.URL), sceneTestConfig(t, srv.URL),
 		"j_abc", "T", agent.CategoryAlgorithm, false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan bool, 1)
 	go func() {
-		_, ok := fn(ctx, agent.Scene{Index: 0}, t.TempDir())
+		_, ok := fn(ctx, []agent.Scene{{Index: 0}}, t.TempDir())
 		done <- ok
 	}()
 
@@ -172,18 +172,17 @@ func TestAgentSceneFuncHonoursCancellation(t *testing.T) {
 	select {
 	case ok := <-done:
 		if ok {
-			t.Error("a cancelled scene must not report success")
+			t.Error("a cancelled render must not report success")
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("scene did not return after the job was cancelled")
+		t.Fatal("render did not return after the job was cancelled")
 	}
 }
 
 func TestIDFromWorkDir(t *testing.T) {
 	root := WorkRoot("j_7f3a9c21")
 	cases := []struct{ in, want string }{
-		{filepath.Join(root, "scene0"), "j_7f3a9c21"},
-		{filepath.Join(root, "scene12", "media"), "j_7f3a9c21"},
+		{filepath.Join(root, "media"), "j_7f3a9c21"},
 		{root, "j_7f3a9c21"},
 		{"/etc/passwd", ""},
 		{filepath.Dir(root), ""},

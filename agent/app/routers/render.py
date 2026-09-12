@@ -1,18 +1,20 @@
 from fastapi import APIRouter, HTTPException
 from app.graphs.manim_generator.graph import manim_generator_graph
-from app.graphs.manim_generator.state import SceneState
-from app.schemas import SceneRenderRequest, SceneRenderResponse
+from app.graphs.manim_generator.state import RenderState
+from app.schemas import RenderRequest, RenderResponse
 
 router = APIRouter()
 
 
-@router.post("/scenes/render", response_model=SceneRenderResponse)
-async def render_scene(req: SceneRenderRequest):
-    """POST /scenes/render - Manim Generator agent endpoint: retrieve -> generate -> lint -> render -> repair -> ingest."""
+@router.post("/render", response_model=RenderResponse)
+async def render_video(req: RenderRequest):
+    """POST /render - Manim Generator agent endpoint: retrieve -> generate ->
+    lint -> render -> repair -> ingest, over the whole storyboard as one
+    continuous script (not one call per scene — see FRD §10.4)."""
     try:
-        initial_state = SceneState(
+        initial_state = RenderState(
             job_id=req.job_id,
-            scene=req.scene,
+            scenes=req.scenes,
             storyboard_title=req.storyboard_title,
             category=req.category,
             guardrails=req.guardrails,
@@ -22,13 +24,13 @@ async def render_scene(req: SceneRenderRequest):
 
         final_state = manim_generator_graph.invoke(
             initial_state.model_dump(),
-            config={"configurable": {"thread_id": f"{req.job_id}/{req.scene.index}"}},
+            config={"configurable": {"thread_id": req.job_id}},
         )
 
         clip_path = final_state.get("clip_path")
         ok = bool(clip_path)
 
-        return SceneRenderResponse(
+        return RenderResponse(
             ok=ok,
             clip_path=clip_path,
             attempts=final_state.get("attempts", 1),

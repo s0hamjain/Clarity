@@ -8,9 +8,16 @@ class ManimSource(BaseModel):
     scene_class: str = Field("GeneratedScene", description="Must be 'GeneratedScene'")
 
 
-class SceneState(BaseModel):
+class RenderState(BaseModel):
+    """One call renders the whole storyboard as a single continuous script.
+
+    Replaces the old per-scene SceneState. `scenes` is the full ordered
+    storyboard; the model writes one construct() that plays every scene as a
+    sequential beat, not isolated per-scene clips concatenated afterward.
+    """
+
     job_id: str
-    scene: Scene
+    scenes: list[Scene]
     storyboard_title: str
     category: str
     guardrails: bool = False

@@ -1,6 +1,6 @@
 import logging
 from langgraph.graph import StateGraph, START, END
-from app.graphs.manim_generator.state import SceneState
+from app.graphs.manim_generator.state import RenderState
 from app.graphs.manim_generator.nodes import (
     retrieve_node,
     generate_node,
@@ -12,7 +12,7 @@ from app.graphs.manim_generator.nodes import (
 logger = logging.getLogger(__name__)
 
 
-def check_lint(state: SceneState) -> str:
+def check_lint(state: RenderState) -> str:
     """Conditional edge after lint node."""
     if state.traceback is None:
         return "render"
@@ -29,7 +29,7 @@ def check_lint(state: SceneState) -> str:
     return "generate"
 
 
-def check_render(state: SceneState) -> str:
+def check_render(state: RenderState) -> str:
     """Conditional edge after render node."""
     if state.clip_path:
         return "ingest"
@@ -38,11 +38,11 @@ def check_render(state: SceneState) -> str:
         logger.info(f"Render failed (attempt {state.attempts}/3). Retrying with hint: '{state.hint}'")
         return "retrieve"
     else:
-        logger.warning(f"Exceeded max render attempts ({state.attempts}/3). Giving up on scene.")
+        logger.warning(f"Exceeded max render attempts ({state.attempts}/3). Giving up on the render.")
         return END
 
 
-builder = StateGraph(SceneState)
+builder = StateGraph(RenderState)
 builder.add_node("retrieve", retrieve_node)
 builder.add_node("generate", generate_node)
 builder.add_node("lint", lint_node)

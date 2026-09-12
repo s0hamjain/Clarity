@@ -2,14 +2,14 @@ from fastapi import FastAPI
 import httpx
 from app.config import settings
 from app.schemas import HealthResponse
-from app.routers import vision, explain, scenes, snippets, debug
+from app.routers import vision, explain, render, snippets, debug
 from app.vectorstore import get_mongo_client
 
 app = FastAPI(title="Clarity Agent Service", version="0.1.0")
 
 app.include_router(vision.router)
 app.include_router(explain.router)
-app.include_router(scenes.router)
+app.include_router(render.router)
 app.include_router(snippets.router)
 app.include_router(debug.router)
 

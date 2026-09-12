@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -78,8 +77,6 @@ func (s *recordingStore) Update(_ context.Context, id string, f Fields) error {
 			j.Error = strPtr(v)
 		case "scenes_total":
 			j.ScenesTotal = v.(int)
-		case "scenes_done":
-			j.ScenesDone = v.(int)
 		case "cached":
 			j.Cached = v.(bool)
 		default:
@@ -201,7 +198,7 @@ func TestFakePipelineWalksEveryStatus(t *testing.T) {
 	}
 	want := []Status{
 		StatusTranscribing, StatusExplaining, StatusGenerating,
-		StatusRendering, StatusConcatenating, StatusUploading, StatusDone,
+		StatusRendering, StatusUploading, StatusDone,
 	}
 	if len(statuses) != len(want) {
 		t.Fatalf("statuses = %v, want %v", statuses, want)
@@ -215,32 +212,32 @@ func TestFakePipelineWalksEveryStatus(t *testing.T) {
 	if final.VideoURL == nil || *final.VideoURL == "" {
 		t.Error("done without a video_url")
 	}
-	if final.ScenesDone != final.ScenesTotal || final.ScenesTotal == 0 {
-		t.Errorf("scenes_done/scenes_total = %d/%d", final.ScenesDone, final.ScenesTotal)
+	if final.ScenesTotal == 0 {
+		t.Errorf("scenes_total = %d, want it set from the storyboard", final.ScenesTotal)
 	}
 }
 
-// Rule 8: the explanation is written before any scene work starts. This is the
-// most important ordering in the server — every millisecond after /explain
-// returns is a second the user waits for nothing.
+// Rule 8: the explanation is written before any render work starts. This is
+// the most important ordering in the server — every millisecond after
+// /explain returns is a second the user waits for nothing.
 func TestExplanationIsWrittenBeforeAnySceneWork(t *testing.T) {
 	w, js, _ := newTestWorker(t)
 	runToTerminal(t, w, js, New("", false, "test"))
 
-	explainedAt, firstSceneAt := -1, -1
+	explainedAt, renderingAt := -1, -1
 	for i, f := range js.snapshot() {
 		if _, ok := f["explanation"]; ok && explainedAt < 0 {
 			explainedAt = i
 		}
-		if _, ok := f["scenes_done"]; ok && firstSceneAt < 0 {
-			firstSceneAt = i
+		if s, ok := f["status"].(Status); ok && s == StatusRendering && renderingAt < 0 {
+			renderingAt = i
 		}
 	}
 	if explainedAt < 0 {
 		t.Fatal("the explanation was never written")
 	}
-	if firstSceneAt >= 0 && explainedAt > firstSceneAt {
-		t.Fatalf("explanation written at write %d, after scene work began at %d", explainedAt, firstSceneAt)
+	if renderingAt >= 0 && explainedAt > renderingAt {
+		t.Fatalf("explanation written at write %d, after render work began at %d", explainedAt, renderingAt)
 	}
 }
 
@@ -343,13 +340,13 @@ func TestCacheKeyGroupsIdenticalJobs(t *testing.T) {
 	}
 }
 
-// stubSceneFunc renders instantly and always succeeds, so the pipeline tests
+// stubRenderFunc renders instantly and always succeeds, so the pipeline tests
 // measure the pipeline rather than the renderer.
-func stubSceneFunc(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
+func stubRenderFunc(ctx context.Context, scenes []agent.Scene, workDir string) (string, bool) {
 	if ctx.Err() != nil {
 		return "", false
 	}
-	return filepath.Join(workDir, fmt.Sprintf("scene%d.mp4", scene.Index)), true
+	return filepath.Join(workDir, "output.mp4"), true
 }
 
 // strPtr mirrors how the real stores handle a nullable string field: a nil

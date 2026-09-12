@@ -20,7 +20,7 @@ If a word here is unfamiliar, the [README glossary](../README.md#glossary) defin
 | **Job** | One request from screenshot to video, with an ID and a status that advances through fixed steps (§11.2). |
 | **Coordinator** | The Go server the desktop app talks to. Orchestrates; does no AI or rendering itself (§11). |
 | **Agent service** | The Python server that makes every AI call — Gemini reads the screenshot and writes the explanation, Claude Sonnet writes the Manim code (§10). |
-| **Storyboard / scene** | The model's plan for the animation: 2–5 scenes, each rendered separately then stitched (§10.2, §14). |
+| **Storyboard / scene** | The model's plan for the animation: 2–5 scenes (beats), written and rendered as one continuous script, not stitched from separate clips (§10.2, §10.4, §14). |
 | **Snippet corpus** | Verified working Manim examples in MongoDB; the 3 most similar are shown to the model before it writes code. This is the RAG part (§13). |
 | **Cache key** | The fingerprint of a problem; same fingerprint means reuse the existing video (§12). |
 | **Spotlight box / result box** | The two floating windows of the desktop app: input, then output (§5, §15). |
@@ -59,7 +59,7 @@ Press a hotkey on any problem on your screen, get a written explanation in secon
 |---|---|---|
 | Goal | Capture any region of the screen, in any application, with one hotkey. | Must |
 | Goal | Deliver the written explanation the moment it exists, before any rendering starts. | Must |
-| Goal | Generate and render a per-problem animation as several scenes in parallel, joined into one video. | Must |
+| Goal | Generate and render a per-problem animation as one continuous script covering every storyboard beat in sequence — not separate clips stitched together, which looks like the animation restarting at every cut. | Must |
 | Goal | Ground generated Manim code in retrieved, verified snippets (RAG over MongoDB Atlas) so it renders on the first try more often. | Must |
 | Goal | Never render the same problem twice — cache by problem hash. | Must |
 | Goal | Ship as an installable macOS app, not a script. | Must |
@@ -129,13 +129,13 @@ Desktop app (macOS menu bar, Python)
         │  HTTP :8080
         ▼
 Coordinator (Go)
-  job lifecycle · cache lookup · per-scene fan-out · repair loop · concat · upload
+  job lifecycle · cache lookup · one continuous-script render · upload
         │  HTTP :8000                    │
         ▼                                 ├──► MongoDB Atlas   jobs · cache
 Agent service (Python, FastAPI, LangGraph)◄┤  POST /internal/render (agent's render tool)
-  /vision   Intake chain                  ├──► Docker          one manim-worker container per scene
-  /explain  Explainer agent               ├──► ffmpeg          concat, stream copy
-  /scenes/render  Manim Generator agent   └──► S3 / MinIO      finished MP4s, served directly
+  /vision   Intake chain                  ├──► Docker          one manim-worker container per job
+  /explain  Explainer agent               ├──► ffmpeg          no-op join, stream copy
+  /render   Manim Generator agent         └──► S3 / MinIO      finished MP4s, served directly
         │
         ├──► Google Gemini API (OCR + explanation)
         ├──► Claude API (Sonnet 5 — Manim code only)
@@ -159,7 +159,7 @@ Two decisions shape everything downstream:
 | Installer | PyInstaller → `.app` · `create-dmg` → `.dmg` · `pkgbuild` → `.pkg` (optional) | Distributable build |
 | Coordinator | Go 1.22+ · `net/http` · `mongo-driver/v2` · AWS SDK v2 | Public API, job orchestration, cache, render dispatch |
 | Agent service | Python 3.12 · FastAPI · **LangGraph** · **LangChain** (`langchain-core`, `langchain-google-genai`, `langchain-anthropic`, `langchain-mongodb`, `langchain-voyageai`) · **Pydantic v2** | Three agents (Intake, Explainer, Manim Generator); every model call; the vector store; corpus ingest |
-| OCR / vision | Google Gemini 3.8 Flash (`gemini-3.8-flash`) via `google-genai` | Reads the problem off the screenshot, verbatim. `temperature=0` for deterministic transcription. |
+| OCR / vision | Google Gemini 3.8 Flash (`gemini-3.8-flash`) via `google-genai` | Reads what's on the screenshot — verbatim if it's written text, described precisely if it's a diagram — combined with the user's own stated intent. `temperature=0` for deterministic output. |
 | Explanation | Google Gemini 3.8 Flash (`gemini-3.8-flash`) | Written explanation + storyboard |
 | Code generation | Claude Sonnet 5 (`claude-sonnet-5`) | Manim source and repair |
 | Embeddings | Voyage AI `voyage-code-3` (1024 dims) | Embeds snippet corpus and scene queries |
@@ -202,8 +202,7 @@ Database: `clarity`. Connection string in `MONGODB_URI`.
   status:         "rendering",            // see §11 status table
   problem_hash:   "a3f9c1d2e4b57680",     // null until /vision returns
   explanation:    "**Step 1.** ...",      // null until /explain returns; never cleared after
-  scenes_total:   3,
-  scenes_done:    2,
+  scenes_total:   3,                       // beats in the storyboard; informational only — rendered as one script, not per-scene
   video_url:      null,                   // set on done
   cached:         false,
   error:          null,                   // string on failed
@@ -286,7 +285,7 @@ Three graphs, one per endpoint:
 |---|---|---|---|---|
 | **Intake** | `POST /vision` | Single-step chain (`prompt \| model.with_structured_output`) | Gemini 3.8 Flash, `temperature=0` | none |
 | **Explainer** | `POST /explain` | Agent: draft → critique → (revise → critique)? | Gemini 3.8 Flash | ≤ 1 revision |
-| **Manim Generator** | `POST /scenes/render` | Agent: retrieve → generate → lint → render → (repair)… → ingest | Sonnet 5 generates; Gemini Flash never touches code | ≤ 3 render attempts, ≤ 2 lint retries each |
+| **Manim Generator** | `POST /render` | Agent: retrieve → generate → lint → render → (repair)… → ingest | Sonnet 5 generates; Gemini Flash never touches code | ≤ 3 render attempts, ≤ 2 lint retries each |
 
 Principles that hold for every graph:
 
@@ -301,13 +300,25 @@ Principles that hold for every graph:
 
 ```json
 // request
-{ "image_b64": "iVBORw0KG...", "media_type": "image/png", "guardrails": false }
+{ "image_b64": "iVBORw0KG...", "media_type": "image/png", "user_prompt": "model topological sort on this graph", "guardrails": false }
 
 // response
 { "problem_text": "def binary_search(arr, target): ...", "category": "algorithm", "confidence": 0.91 }
 ```
 
-One `Runnable`: `vision_prompt | gemini_flash.with_structured_output(VisionResponse)`, image passed as an inline `Part`. `temperature=0`, thinking `low`. **`problem_text` is verbatim** — this string is hashed by the coordinator; the prompt contains no instruction to interpret or summarize. Nothing problem-like → `category: "unknown"`, `problem_text: ""`.
+One `Runnable`: `vision_prompt | gemini_flash.with_structured_output(VisionResponse)`, image passed as an inline `Part`, `user_prompt` folded in as a text part when non-empty. `temperature=0`, thinking `low`.
+
+`problem_text` is **verbatim** when the screenshot has written text on it (a problem, an
+equation, code) — the prompt contains no instruction to interpret or summarize that text.
+When the screenshot is not written text — a bare graph diagram, a plotted curve, a hand-drawn
+structure — there is nothing to transcribe verbatim, so `problem_text` is a precise description
+of what's on screen, folded together with `user_prompt`. Either way this string is hashed by
+the coordinator. `category` is decided from the image and `user_prompt` together, so a plain
+diagram plus "topological sort" is `"algorithm"` even with no pseudocode visible.
+
+`category: "unknown"`, `problem_text: ""` only when the screen has nothing legible or
+describable on it **and** `user_prompt` is empty — this step's job is to capture whatever the
+user is working on, not to gatekeep on whether the screenshot reads like a textbook exercise.
 
 ### 10.3 `POST /explain` — Explainer agent
 
@@ -340,16 +351,21 @@ draft ──► critique ──► pass? ──► END
 | `critique` | Gemini Flash → `Critique` | Checks the rules as a rubric: 2–5 scenes · `narration` ≤ 90 chars · every scene shows something text can't (motion, a plot, a pointer, a transform — **not** restated algebra) · relative positioning language only · if `guardrails`, the final answer is genuinely absent. Returns `passed: bool` and a list of `issues`. Hard rules (counts, lengths) are also checked in Python before the model is asked. |
 | `revise` | Gemini Flash → `ExplainDraft` | Re-drafts with the issues appended. Increments `revisions`. |
 
-### 10.4 `POST /scenes/render` — Manim Generator agent
+### 10.4 `POST /render` — Manim Generator agent
 
-One call per scene. The coordinator fans these out concurrently, bounded by its render semaphore. The agent owns everything from "here is a scene" to "here is a finished clip or a final failure" — retrieval, generation, linting, rendering through the coordinator's internal endpoint, repair, and ingesting the result back into the corpus.
+**One call for the whole storyboard, not one per scene.** Earlier versions of this spec fanned scenes out concurrently, one independent generate→render call each, then concatenated the clips. That produced visibly disjoint videos: each scene's code was written with no knowledge of what the previous scene's final frame looked like, so scenes routinely re-`Create()`/re-`Write()` the same or similar objects, which plays back as the whole animation restarting every few seconds. The fix is architectural, not cosmetic: the agent now writes **one continuous Manim script** covering every beat of the storyboard in order, rendered once, as one clip. There is no per-scene render and no `Concat()` step in the normal path.
+
+The agent owns everything from "here is a storyboard" to "here is a finished clip or a final failure" — retrieval, generation, linting, rendering through the coordinator's internal endpoint, repair, and ingesting the result back into the corpus.
 
 ```json
 // request
-{ "job_id": "j_7f3a9c21", "scene": { "index": 1, "narration": "…", "visual": "…" }, "category": "algorithm", "guardrails": false, "work_dir": "/tmp/clarity/j_7f3a9c21/scene1", "quality": "-ql" }
+{ "job_id": "j_7f3a9c21", "storyboard_title": "Where the Binary Search Goes Wrong", "scenes": [
+  { "index": 0, "narration": "lo and hi start at the ends.", "visual": "A row of 8 boxes; pointers lo and hi under the first and last.", "duration_seconds": 8 },
+  { "index": 1, "narration": "mid rounds down — and hi never moves past it.", "visual": "mid pointer appears; hi jumps to mid instead of mid-1; the box checked twice is highlighted.", "duration_seconds": 10 }
+], "category": "algorithm", "guardrails": false, "work_dir": "/tmp/clarity/j_7f3a9c21", "quality": "-ql" }
 
 // response — success
-{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/scene1/scene1.mp4", "attempts": 2, "snippets_used": ["66f1…", "66f2…"], "snippet_id": "66f9…" }
+{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/video.mp4", "attempts": 2, "snippets_used": ["66f1…", "66f2…"], "snippet_id": "66f9…" }
 
 // response — gave up
 { "ok": false, "attempts": 3, "stage": "render", "last_traceback": "NameError: name 'RIGHT_ARROW' is not defined …" }
@@ -367,11 +383,13 @@ retrieve ──► generate ──► lint ──► ok? ──► render ──
 
 | Node | Model / tool | Does |
 |---|---|---|
-| `retrieve` | `MongoDBAtlasVectorSearch.as_retriever(k=3, pre_filter={verified: true, category ∈ {cat, "general"}})` | Query = `narration + " " + visual` (+ `" " + hint` on repair). Stores `snippets` in state. Empty result is fine. |
-| `generate` | **Claude Sonnet 5** → `ManimSource` | `codegen.md` on first attempt; `repair.md` (with `previous_source` + last 40 traceback lines) when `traceback` is set. Snippets pasted verbatim under "Reference — imitate these." Asserts `class GeneratedScene(Scene)` is present — otherwise it's a lint failure. |
-| `lint` | Python, no model | `ast.parse`; imports only `manim`/`numpy`/stdlib; no `os.system`, `os.popen`, `subprocess`, `eval`, `exec`, `__import__`, `open(` for writing, `shutil.rmtree`; literal coordinates (`np.array([`, `.move_to([`) flagged. Failure → back to `generate` with the lint message as `traceback`, up to 2 times per render attempt. |
+| `retrieve` | `MongoDBAtlasVectorSearch.as_retriever(k=6, pre_filter={verified: true, category ∈ {cat, "general"}})` | Query = `storyboard_title + " " + every scene's narration and visual, joined` (+ `" " + hint` on repair). `k` is higher than the old per-scene `k=3` because one script has to cover several distinct techniques (a plot *and* a transform *and* text, say) rather than one. Stores `snippets` in state. Empty result is fine. |
+| `generate` | **Claude Sonnet 5** → `ManimSource` | `codegen.md` on first attempt; `repair.md` (with `previous_source` + last 40 traceback lines) when `traceback` is set. Snippets pasted verbatim under "Reference — imitate these." The prompt gives the model the full ordered list of scenes and requires **one** `construct()` that plays them as continuous beats — objects introduced in an earlier beat must be transformed/moved/faded by later beats, never silently recreated. Asserts `class GeneratedScene(Scene)` is present — otherwise it's a lint failure. |
+| `lint` | Python, no model | Same checks as before (`ast.parse`; `manim`/`numpy`/stdlib only; no `os.system`, `os.popen`, `subprocess`, `eval`, `exec`, `__import__`, `open(` for writing, `shutil.rmtree`; literal coordinates flagged), run once against the whole script. Failure → back to `generate` with the lint message as `traceback`, up to 2 times per render attempt. |
 | `render` | Tool: `POST <COORDINATOR_URL>/internal/render` (§14.1) | Coordinator runs the source in `manim-worker` (its own pre-check runs again — defense in depth), returns `clip_path` or `{stage, traceback}`. Increments `attempts`. |
-| `ingest` | Atlas upsert | On success: `{title: storyboard title + " — scene " + i, description: visual, category, tags: [], source, origin: "generated", verified: false}` via the same code path as `/snippets/ingest`. Failure is logged, never fatal. |
+| `ingest` | Atlas upsert | On success: `{title: storyboard title, description: every scene's visual joined, category, tags: [], source, origin: "generated", verified: false}` via the same code path as `/snippets/ingest`. Failure is logged, never fatal. |
+
+**What this trades away, on purpose:** the old per-scene design let one bad scene get dropped while the rest of the video still played (FRD §23 rule 16, now retired). A single script has no partial success — if generation or rendering fails after 3 attempts, the whole job ends with no video, same as the explanation-only fallback for zero surviving scenes used to work. That fallback path (`done` with `video_url: null`) is unchanged; it now just covers "the one render attempt failed" instead of "every scene failed."
 
 ### 10.5 Snippet corpus endpoints
 
@@ -427,22 +445,21 @@ The only endpoint the desktop app polls. Every **1 s**, give up at **180 s**. `4
 ```json
 {
   "job_id": "j_7f3a9c21", "status": "rendering", "problem_hash": "a3f9c1d2e4b57680",
-  "explanation": "**Step 1.** ...", "scenes_total": 3, "scenes_done": 2,
+  "explanation": "**Step 1.** ...", "scenes_total": 3,
   "video_url": null, "cached": false, "error": null, "updated_at": "2026-09-12T02:14:03Z"
 }
 ```
 
-| Status | Meaning | `explanation` | `scenes_done` | `video_url` |
-|---|---|---|---|---|
-| `queued` | accepted, not started | null | 0 | null |
-| `transcribing` | `/vision` in flight | null | 0 | null |
-| `explaining` | `/explain` in flight | null | 0 | null |
-| `generating` | per-scene `/snippets/search` + `/codegen` in flight | **set** | 0 | null |
-| `rendering` | scenes rendering in Docker, concurrently | set | 0..N | null |
-| `concatenating` | ffmpeg joining clips | set | N | null |
-| `uploading` | pushing MP4 to S3 | set | N | null |
-| `done` | video live at `video_url` — **or** `video_url: null` if zero scenes survived | set | N | set or null |
-| `failed` | ended before `/explain` returned | null | 0 | null |
+| Status | Meaning | `explanation` | `video_url` |
+|---|---|---|---|
+| `queued` | accepted, not started | null | null |
+| `transcribing` | `/vision` in flight | null | null |
+| `explaining` | `/explain` in flight | null | null |
+| `generating` | `/snippets/search` + `/codegen` in flight for the whole storyboard | **set** | null |
+| `rendering` | the one continuous script rendering in Docker | set | null |
+| `uploading` | pushing MP4 to S3 | set | null |
+| `done` | video live at `video_url` — **or** `video_url: null` if the render failed after 3 attempts | set | set or null |
+| `failed` | ended before `/explain` returned | null | null |
 
 **Two rules the desktop app must honor:**
 1. Render `explanation` the instant it is non-null, regardless of status.
@@ -486,8 +503,9 @@ Generated Manim fails two ways. Code that crashes is recoverable via the repair 
 ### Pipeline
 All three arrows go through one `langchain_mongodb.MongoDBAtlasVectorSearch` instance (FRD §10.8) so index and query embeddings can never drift.
 ```text
-seed .py files ──► scripts/seed_snippets.py ──► store.add_documents (voyage-code-3) ──► manim_snippets
-scene {narration, visual} ──► retriever k=3, pre_filter verified=true ──► Manim Generator `retrieve` node ──► `generate` prompt
+seed .py files ──────────► scripts/seed_snippets.py   ──► store.add_documents (voyage-code-3) ──► manim_snippets
+manim_docs examples ─────► scripts/seed_manim_docs.py ──► store.add_documents (verified=true)  ──► manim_snippets
+storyboard {title, every scene's narration+visual} ──► retriever k=6, pre_filter verified=true ──► Manim Generator `retrieve` node ──► `generate` prompt
 `render` node succeeded ──► `ingest` node: store.add_documents (verified=false) ──► PATCH verified=true after human review
 ```
 
@@ -502,20 +520,22 @@ scene {narration, visual} ──► retriever k=3, pre_filter verified=true ─�
 
 # 14. Render Pipeline
 
-### 14.1 Per-scene fan-out
-After `/explain` returns N scenes, the coordinator creates a per-scene `work_dir` and starts N goroutines, each calling the agent's **`POST /scenes/render`** (§10.4). The agent owns the loop — retrieve, generate, lint, render, repair up to 3 times — and renders by calling back into the coordinator's **`POST /internal/render`**, which is where the semaphore (`RENDER_CONCURRENCY`) and P2's `Render()` live. The coordinator waits for all N, then concatenates whatever came back `ok: true`.
+### 14.1 One call, one render
+After `/explain` returns the storyboard, the coordinator creates one `work_dir` for the job and calls the agent's **`POST /render`** (§10.4) once, with every scene. The agent owns the loop — retrieve, generate, lint, render, repair up to 3 times — and renders by calling back into the coordinator's **`POST /internal/render`**, which is where the semaphore (`RENDER_CONCURRENCY`) and `Render()` live.
 
 ```go
-// P2 implements; the /internal/render handler calls it.
+// The /internal/render handler calls it.
 func Render(ctx context.Context, src string, workDir string, quality string) (clipPath string, err *RenderError)
 type RenderError struct { Stage string /* "precheck"|"container"|"timeout" */; Traceback string }
-// P2 implements; the coordinator calls it once per job after fan-out.
+// The coordinator calls it once per job, on the single clip Render produced.
+// A no-op join for one input, kept so the upload path doesn't special-case
+// the common case of exactly one clip.
 func Concat(ctx context.Context, clipPaths []string, outKey string) (videoURL string, err error)
 ```
 
 **`POST /internal/render`** (coordinator, localhost only, called by the agent's `render` node — API.md §2.7): `{source, work_dir, quality}` → `{ok: true, clip_path}` or `{ok: false, stage, traceback}`. Acquires the render semaphore, runs the static pre-check, then `Render()`. Never renders without the semaphore.
 
-A scene whose agent call returns `ok: false` is **dropped, not the job**. Zero surviving scenes → `done` with `video_url: null`.
+If the agent's call returns `ok: false` after 3 attempts, the **whole job** ends `done` with `video_url: null` — there is no partial video anymore, since there is only one render, not several to drop from. (Superseded: earlier versions of this section described N concurrent per-scene renders where a failing scene was dropped and the rest of the video still played. That design produced visibly disjoint videos — see §10.4's note — and is retired.)
 
 ### 14.2 Static pre-check (before every `docker run`)
 Runs inside `/internal/render` on every call — the agent's `lint` node already ran a similar check, but this one is the security gate and it runs regardless. Parses the full AST (`ast.parse` over stdin, walked for `Import`/`ImportFrom`/`Call` nodes — not a per-line regex, so a banned import chained after a `;` or split across a call chain doesn't slip through); rejects any import not `manim`/`numpy`/stdlib; rejects `os.system`, `os.popen`, `subprocess`, `open(` for writing (any mode containing `w`, `a`, or `x`), `__import__`, `eval`, `exec`, `shutil.rmtree`; requires `class GeneratedScene(Scene)`. Cheap, and turns most failures into a fast traceback instead of a slow container.
@@ -527,13 +547,10 @@ Runs inside `/internal/render` on every call — the agent's `lint` node already
 docker run --rm --network none --memory 1g --cpus 1 -v <tmpdir>:/work manim-worker \
   manim -qm /work/scene.py GeneratedScene -o out.mp4 --media_dir /work/media
 ```
-Hard per-scene timeout 120 s via `context.Context` + `docker kill`. Quality flag is a **job-level constant** passed identically to every scene.
+Hard render timeout 120 s via `context.Context` + `docker kill`.
 
-### 14.4 Concat — no re-encode
-```sh
-ffmpeg -f concat -safe 0 -i concat_list.txt -c copy final.mp4
-```
-Works only because every scene shares resolution/fps. Guarded by 14.3's job-level constant.
+### 14.4 Upload — no re-encode
+`Concat()` (FRD §14.1) still runs on the single clip Render produced — for one input it degrades to a straight copy/upload rather than an actual join, which is why the function was kept instead of calling `uploadToS3` directly: the coordinator's tail of the pipeline doesn't need to special-case "one clip" vs. "several," and if a future change ever needs to join more than one clip again, the consistency check (§ concat_test.go) is already there.
 
 ### 14.5 Post-render ingest
 Done by the agent's `ingest` node (§10.4), not the coordinator — the agent has the source, the scene, and the render result in its state. The coordinator only reads `snippet_id` from the response for logging.
@@ -556,7 +573,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | Recents in the box | With an empty field, **↓** or `/` expands the box downward into a list (max 8 visible, scroll for 50): thumbnail · problem text or "Untitled capture" · relative time · a dot if a video exists. **Enter** on a recent with a result → open its result box. **Enter** on a recent without one, or **Tab** on any recent → load that screenshot into the box for a new question. Typing with the list open filters by problem text. |
 | Submit | `POST /api/jobs` with `source: "desktop"` and the current guardrails setting. Write the recent immediately (before the response) so a failed submit is still visible in recents. On connection failure: notification "Can't reach the server", spotlight box stays open. |
 | Result box | `webview.create_window(frameless=True, transparent=True, vibrancy=True, on_top=True, easy_drag=True)`, ~440×680, opens where the spotlight box was, loads `ui/result/index.html?job=&server=`. Polls every 1 s. **Draggable anywhere**: `easy_drag=True` makes the whole window a drag handle; `<video>`, links, and selectable text opt out with `class="pywebview-drag-region"` *not* applied. **X** top-right → `window.close()`; **Esc** does the same. Each job opens its own box, offset 24 px from the last so several can stay open. Fade-in 150 ms. |
-| Result content | Status line in plain words ("Reading the problem…", "Writing explanation…", "Rendering scene 2 of 3…", "Done"). Explanation rendered from markdown (`marked.min.js`, bundled — no CDN). `<video controls autoplay muted>` when `video_url` arrives. `done` with null video → explanation + quiet note. 180 s timeout → message + retry. Every poll that adds `problem_text`, `explanation`, or `video_url` updates the local recent. |
+| Result content | Status line in plain words ("Reading the problem…", "Writing explanation…", "Rendering the animation…", "Done"). Explanation rendered from markdown (`marked.min.js`, bundled — no CDN). `<video controls autoplay muted>` when `video_url` arrives. `done` with null video → explanation + quiet note. 180 s timeout → message + retry. Every poll that adds `problem_text`, `explanation`, or `video_url` updates the local recent. |
 | Reopen from recents | If the local recent has `explanation`/`video_url`, render from local data first, then poll `GET /api/jobs/{id}` once; a `404` is fine — the local copy is the source. |
 | Notification | macOS notification when the explanation lands, so the user doesn't have to watch the window. |
 | Config | `SERVER_URL` from `~/Library/Application Support/Clarity/config.json`, default `http://localhost:8080`, editable via the **Server…** menu item. |
@@ -594,7 +611,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 
 ## 16.4 Render
 1. For each scene, concurrently: retrieve snippets, generate source, pre-check, render in a container, repair on failure up to 3×.
-2. The result box shows "Rendering scene k of N…" as `scenes_done` advances.
+2. The result box shows "Rendering the animation…" during the `rendering` status — one continuous render, no per-scene fraction to show.
 3. Successful clips are concatenated and uploaded. `cache` is written. Successful sources are ingested as unverified snippets.
 4. The result box plays the video. Job is `done`. The local recent gets `video_url`.
 5. User **drags the box** off the problem if it's in the way, watches, and clicks **X** when done.
@@ -622,7 +639,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | F3 | A translucent, frameless, centered spotlight box collects optional context before submission; Enter submits, Esc cancels. | Must |
 | F4 | A guardrails toggle in the menu bar controls the `guardrails` flag on every job. | Should |
 | F5 | The result box renders the explanation the instant it is non-null. | Must |
-| F6 | The result box shows scene progress from `scenes_done` / `scenes_total`. | Should |
+| F6 | The result box shows "Rendering the animation…" during the `rendering` status. | Should |
 | F7 | The result box plays the video inline when `video_url` is set. | Must |
 | F8 | `done` with no video shows the explanation and a non-error note. | Must |
 | F9 | Server unreachable produces a notification, never a crash or traceback. | Must |
@@ -651,7 +668,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 |---|---|---|
 | F17 | `/vision` returns verbatim problem text, category, confidence via structured outputs. | Must |
 | F18 | `/explain` returns markdown explanation and a 2–5 scene storyboard. | Must |
-| F19 | `/scenes/render` is a LangGraph agent: retrieve (Atlas vector store) → generate (Sonnet) → lint → render (`/internal/render`) → repair ≤ 3 → ingest. | Must |
+| F19 | `/render` is a LangGraph agent: retrieve (Atlas vector store) → generate (Sonnet) → lint → render (`/internal/render`) → repair ≤ 3 → ingest, over the whole storyboard as one continuous script. | Must |
 | F20 | The `generate` node returns runnable Manim CE source with `class GeneratedScene`, grounded in the retrieved snippets. | Must |
 | F21 | The repair path re-retrieves with the traceback as a hint and passes previous source + traceback to `generate`. | Must |
 | F21b | `/explain` is a LangGraph agent with a critique node and at most one revision. | Should |
@@ -669,8 +686,8 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | F28 | `explanation` is written to `jobs` before any scene work starts. | Must |
 | F29 | Cache key matches §12 exactly, with a unit test. | Must |
 | F30 | Cache hit returns explanation and video without calling `/explain`. | Must |
-| F31 | Scenes fan out concurrently as `/scenes/render` calls; `/internal/render` is bounded by `RENDER_CONCURRENCY`. | Must |
-| F32 | A scene whose agent call returns `ok: false` is dropped; the job completes with the rest. | Must |
+| F31 | The whole storyboard renders as one `/render` call; `/internal/render` is bounded by `RENDER_CONCURRENCY`. | Must |
+| F32 | A job whose agent call returns `ok: false` after 3 attempts ends `done` with `video_url: null`; the explanation still shows. | Must |
 | F33 | `POST /internal/render` exists, is localhost-only, acquires the semaphore and runs the pre-check before `Render()`. | Must |
 | F34 | Every `jobs` write sets `updated_at`. | Must |
 
@@ -712,10 +729,9 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | `lint` reject | Back to `generate` with the reason as traceback, ≤ 2 per attempt. |
 | `/internal/render` pre-check reject or container failure | Agent counts a failed attempt; retrieves with the traceback's first line as hint; repairs. |
 | Container timeout | `docker kill`; `/internal/render` returns `stage: "timeout"`; failed attempt. |
-| Agent returns `ok: false` (3 attempts) | Coordinator drops the scene. Job continues. |
-| Agent unreachable / `/scenes/render` 5xx | Coordinator treats the scene as dropped; job continues. |
-| Zero scenes survive | `done`, `video_url: null`. Cache **not** written. |
-| Concat or upload error | `done`, `video_url: null`, `error` set. Cache not written. |
+| Agent returns `ok: false` (3 attempts) | `done`, `video_url: null`, `error: "render_failed"`. Explanation still shows. |
+| Agent unreachable / `/render` 5xx | Coordinator treats the render as failed; job still ends `done` with no video. |
+| Upload error | `done`, `video_url: null`, `error` set. Cache not written. |
 | `ingest` node error | Agent logs, returns `snippet_id: null`. Never fatal. |
 | Atlas unreachable | Coordinator refuses new jobs with `503`; `/healthz` reports `atlas: false`. |
 | Desktop: server unreachable | Notification. Spotlight box stays open for retry. |
@@ -744,7 +760,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | Hotkey → region capture → spotlight box → result box | Guardrails toggle end-to-end | Notarization |
 | `/vision`, `/explain`, `/codegen` real | `/snippets/ingest` from successful renders | Windows / Linux |
 | Atlas Vector Search retrieval with seeded corpus | PKG installer with LaunchAgent | Narration audio |
-| Per-scene Docker render, repair, concat, S3 | `ffprobe` clip validation | Correctness verification |
+| Docker render, repair, upload | `ffprobe` clip validation | Correctness verification |
 | Cache hit path | Promote script + review flow | Auth on the coordinator |
 | DMG installer, self-signed | Notification on explanation | Accounts / history |
 
@@ -794,7 +810,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 
 ### Agent service
 1. Every model call goes through LangChain `.with_structured_output(PydanticModel)`. Never parse prose for JSON. Never assistant prefill. Never `temperature` on a Claude model.
-2. The `/vision` prompt contains no instruction to interpret, summarize, or contextualize. Verbatim only.
+2. The `/vision` prompt never solves, summarizes, or contextualizes what it reads. Written text on screen is transcribed verbatim; a non-textual image (a diagram, a plot) is described precisely instead, since there is nothing to transcribe — but neither case interprets or explains. (Superseded: earlier versions of this rule said "verbatim only" and treated anything without a literal written problem statement as `category: "unknown"`. That made a bare graph diagram with a typed request like "model topological sort on this" an incorrect `no_problem_found` — retired in favor of reading the image and `user_prompt` together, per §10.2.)
 3. Graph state, node inputs and outputs, requests, responses are all Pydantic models. No `dict`, no `TypedDict`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
 5. One `MongoDBAtlasVectorSearch` instance for seed, retrieve, and ingest; index and query use the same `EMBED_MODEL`.
@@ -802,7 +818,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 
 ### Coordinator
 7. `POST /api/jobs` writes the job and returns. Everything else is in a goroutine with `defer recover()`.
-8. `explanation` is written to `jobs` before any `/scenes/render` call.
+8. `explanation` is written to `jobs` before the `/render` call.
 9. Every `jobs` write sets `updated_at = now`.
 10. `cache` is written only after upload succeeds. Never on any failure path.
 11. Cache hit path never calls `/explain`.

@@ -94,7 +94,6 @@ The only endpoint the desktop app polls. Every 1 s. Stop at `done`, `failed`, or
   "category": "algorithm",
   "explanation": "**Step 1.** The loop condition ...",
   "scenes_total": 3,
-  "scenes_done": 2,
   "video_url": null,
   "cached": false,
   "guardrails": false,
@@ -108,9 +107,8 @@ The only endpoint the desktop app polls. Every 1 s. Stop at `done`, `failed`, or
 |---|---|
 | `problem_hash`, `problem_text`, `category` | After `/vision`. `problem_text` lets the desktop app label the recent. |
 | `explanation` | After `/explain`. **Render it the moment it is non-null**, whatever `status` says. Never cleared afterwards. |
-| `scenes_total` | After `/explain`. |
-| `scenes_done` | Increments as scenes finish or are dropped. |
-| `video_url` | At `done`, or `null` at `done` if zero scenes survived. Direct S3/MinIO URL. |
+| `scenes_total` | After `/explain`. Informational — the storyboard has this many beats, but they render as one continuous script, not separately. |
+| `video_url` | At `done`, or `null` at `done` if the render failed after 3 attempts. Direct S3/MinIO URL. |
 | `cached` | `true` when the pipeline was skipped on a cache hit. |
 | `error` | Error envelope's `code` string on `failed`; otherwise `null`. |
 
@@ -120,7 +118,7 @@ Status values and their guarantees are in §5.
 
 ### 2.3 `DELETE /api/jobs/{job_id}` — cancel a job
 
-Sent by the desktop app when the user closes the result box before `done`. Stops pending work: queued scenes are skipped, running containers are killed. Nothing is written to the cache.
+Sent by the desktop app when the user closes the result box before `done`. Stops pending work: the render, if in flight, is aborted and its container is killed. Nothing is written to the cache.
 
 **Response `200`**
 ```json
@@ -197,13 +195,16 @@ A failed render is a `200` with `ok: false` — that's data for the agent's repa
 
 Internal. Only the coordinator calls it. Every endpoint runs a **LangGraph** graph (or a single LangChain runnable) and returns a Pydantic-validated JSON body — no prose, no fences. Models: Intake and Explainer → Gemini 3.8 Flash; Manim Generator's `generate` node → Claude Sonnet 5. Every request carries `guardrails`. Architecture in FRD §10.
 
-### 3.1 `POST /vision` — Intake chain: transcribe a screenshot
+### 3.1 `POST /vision` — Intake chain: read a screenshot
 
 **Request**
 ```json
-{ "image_b64": "iVBORw0KG...", "media_type": "image/png", "guardrails": false }
+{ "image_b64": "iVBORw0KG...", "media_type": "image/png", "user_prompt": "model topological sort on this graph", "guardrails": false }
 ```
-`image_b64` is raw base64 — the coordinator strips the data-URL prefix.
+`image_b64` is raw base64 — the coordinator strips the data-URL prefix. `user_prompt` is the
+coordinator's own `user_prompt` field, passed through unchanged — it is the only signal available
+when the screenshot has no written problem on it (a bare graph diagram, say), so this step needs
+it too, not just `/explain`.
 
 **Response `200`**
 ```json
@@ -214,11 +215,15 @@ Internal. Only the coordinator calls it. Every endpoint runs a **LangGraph** gra
 
 | Field | Rule |
 |---|---|
-| `problem_text` | **Verbatim.** This string is hashed by the coordinator. |
-| `category` | `"math"` \| `"algorithm"` \| `"unknown"`. |
+| `problem_text` | **Verbatim** if the image has written text on it. Otherwise a precise description of the image (nodes/edges, axes/curve, shapes/labels) folded together with `user_prompt`, since there is nothing to transcribe. This string is hashed by the coordinator either way. |
+| `category` | `"math"` \| `"algorithm"` \| `"unknown"`, decided from the image **and** `user_prompt` together — a plain diagram plus "topological sort" is `"algorithm"`. |
 | `confidence` | 0.0–1.0. |
 
-`category: "unknown"` with `problem_text: ""` is a valid `200` — the coordinator turns it into `failed / no_problem_found`.
+`category: "unknown"` with `problem_text: ""` is a valid `200` — the coordinator turns it into
+`failed / no_problem_found`. This step only reaches for `"unknown"` when the screenshot has
+nothing legible or describable on it **and** `user_prompt` is empty; a diagram with no formally
+worded problem statement is not by itself grounds for `"unknown"` as long as either the image or
+the user's own words say what's wanted.
 
 **Errors:** `400 bad_request` · `502 model_error` (`details.provider: "gemini"`, retryable) · `504 model_timeout`.
 
@@ -248,31 +253,37 @@ Graph: `draft → critique → (revise → critique)?`, at most one revision. `r
 
 **Errors:** `400` · `422 schema_violation` (draft failed validation after the graph's own retry) · `502 model_error` · `504 model_timeout`.
 
-### 3.3 `POST /scenes/render` — Manim Generator agent: one scene to one clip
+### 3.3 `POST /render` — Manim Generator agent: the whole storyboard to one clip
 
-The agent owns the whole loop for one scene: retrieve examples from the Atlas vector store → generate Manim source (Sonnet) → lint → render via the coordinator's `POST /internal/render` (§2.7) → repair on failure, up to 3 render attempts → ingest the successful source back into the corpus.
+**One call for the whole storyboard, not one per scene.** This endpoint used to be `POST /scenes/render`, called once per scene, fanned out concurrently by the coordinator, then stitched together. That produced visibly disjoint videos — each scene was written with no knowledge of the previous scene's final frame, so consecutive scenes routinely re-drew the same objects from scratch, which plays back as the whole animation restarting every few seconds. `/render` fixes this at the source: the agent writes **one continuous script** covering every scene as a sequential beat, and renders it once.
+
+The agent owns the whole loop: retrieve examples from the Atlas vector store (now querying across the whole storyboard, not one scene) → generate one Manim script (Sonnet) → lint → render via the coordinator's `POST /internal/render` (§2.7) → repair on failure, up to 3 render attempts → ingest the successful source back into the corpus.
 
 **Request**
 ```json
 {
   "job_id": "j_7f3a9c21",
-  "scene": { "index": 1, "narration": "…", "visual": "…" },
+  "scenes": [
+    { "index": 0, "narration": "lo and hi start at the ends.", "visual": "A row of boxes with two pointers.", "duration_seconds": 8 },
+    { "index": 1, "narration": "…", "visual": "…", "duration_seconds": 10 }
+  ],
   "storyboard_title": "Where the Binary Search Goes Wrong",
   "category": "algorithm",
   "guardrails": false,
-  "work_dir": "/tmp/clarity/j_7f3a9c21/scene1",
+  "work_dir": "/tmp/clarity/j_7f3a9c21",
   "quality": "-ql"
 }
 ```
 
 | Field | Rule |
 |---|---|
-| `work_dir` | Per-scene directory the coordinator created. The agent passes it through to `/internal/render`; the clip lands there. |
+| `scenes` | The full ordered storyboard from `/explain`, 2–5 entries. The model is required to play them as one continuous `construct()`, not isolated clips. |
+| `work_dir` | The job's directory (no longer per-scene — there's only one render). The agent passes it through to `/internal/render`; the clip lands there. |
 | `quality` | The **job-level** manim quality flag. Passed through unchanged to every render attempt. |
 
 **Response `200` — success**
 ```json
-{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/scene1/scene1.mp4", "attempts": 2, "lint_retries": 1, "snippets_used": ["66f1…", "66f2…", "66f3…"], "snippet_id": "66f9…" }
+{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/video.mp4", "attempts": 2, "lint_retries": 1, "snippets_used": ["66f1…", "66f2…", "66f3…"], "snippet_id": "66f9…" }
 ```
 `snippet_id` is the newly ingested `origin: "generated", verified: false` snippet, or `null` if ingest failed (never fatal).
 
@@ -280,7 +291,7 @@ The agent owns the whole loop for one scene: retrieve examples from the Atlas ve
 ```json
 { "ok": false, "attempts": 3, "lint_retries": 4, "stage": "render", "last_traceback": "NameError: name 'RIGHT_ARROW' is not defined …", "snippets_used": ["…"] }
 ```
-A `200` with `ok: false` is the normal "this scene didn't work out" result. The coordinator drops the scene and continues. Only infrastructure failures are non-2xx.
+A `200` with `ok: false` means the whole job ends with no video (`done`, `video_url: null`) — there's no partial-success path anymore, since there's only one render to fail. Only infrastructure failures are non-2xx.
 
 **Errors:** `400` · `502 model_error` · `502 coordinator_unreachable` (couldn't reach `/internal/render`) · `503 atlas_unavailable` · `504 model_timeout`.
 
@@ -290,7 +301,7 @@ A `200` with `ok: false` is the normal "this scene didn't work out" result. The 
 
 ```json
 // request
-{ "scene": { "index": 1, "narration": "…", "visual": "…" }, "category": "algorithm", "k": 3, "hint": "NameError: name 'RIGHT_ARROW' is not defined" }
+{ "storyboard_title": "…", "scenes": [ { "index": 0, "narration": "…", "visual": "…" } ], "category": "algorithm", "k": 6, "hint": "NameError: name 'RIGHT_ARROW' is not defined" }
 // response
 { "snippets": [ { "id": "66f1…", "title": "Array walk with a moving pointer", "description": "…", "source": "from manim import *
 …", "score": 0.86 } ] }
@@ -301,7 +312,7 @@ Only `verified: true` snippets are ever returned. The coordinator never calls th
 
 ```json
 // request
-{ "scene": {…}, "snippets": [ { "title": "…", "source": "…" } ], "previous_source": null, "traceback": null, "guardrails": false }
+{ "scenes": [{…}], "storyboard_title": "…", "snippets": [ { "title": "…", "source": "…" } ], "previous_source": null, "traceback": null, "guardrails": false }
 // response
 { "manim_source": "from manim import *
 
@@ -387,9 +398,9 @@ Job-level failures surface as `status: "failed"` with `error` set to one of: `no
 ## 5. Job Lifecycle
 
 ```
-queued → transcribing → explaining → generating → rendering → concatenating → uploading → done
-                │             │                                                          ↑
-                └─ failed     └─ failed                              (zero scenes survived: done, video_url null)
+queued → transcribing → explaining → generating → rendering → uploading → done
+                │             │                                          ↑
+                └─ failed     └─ failed                (render failed after 3 attempts: done, video_url null)
 any state ─── DELETE ───► cancelled
 ```
 
@@ -399,10 +410,9 @@ any state ─── DELETE ───► cancelled
 | `transcribing` | `/vision` in flight | |
 | `explaining` | `/vision` returned, cache missed | `problem_hash`, `problem_text`, `category` set. |
 | `generating` | `/explain` returned | **`explanation` set. `scenes_total` set.** |
-| `rendering` | first scene's container started | `scenes_done` advances. |
-| `concatenating` | every scene finished or dropped | `scenes_done == scenes_total`. |
-| `uploading` | concat succeeded | |
-| `done` | upload succeeded — or zero scenes survived | `video_url` set, or `null` with the explanation intact. `cached: true` if the pipeline was skipped. |
+| `rendering` | `/render` call in flight (the whole storyboard, one continuous script) | |
+| `uploading` | the render succeeded; `Concat()` (a pass-through for one clip) is uploading it | |
+| `done` | upload succeeded — or the render failed after 3 attempts | `video_url` set, or `null` with the explanation intact. `cached: true` if the pipeline was skipped. |
 | `failed` | `/vision` said `unknown`, or `/explain` failed | `error` set. `explanation` is `null`. |
 | `cancelled` | `DELETE` | Nothing cached. |
 
@@ -427,7 +437,7 @@ Desktop                Coordinator                    Agent                     
   │                        │◄── {explanation,storyboard} │                            │
   │  ← explanation visible │  write jobs.explanation     │                            │
   │                        │  per scene, concurrently:   │                            │
-  │                        │   POST /scenes/render ─────►│ Manim Generator graph:     │
+  │                        │   POST /render ─────────────►│ Manim Generator graph:     │
   │                        │                             │  retrieve (Atlas vectors)  │
   │                        │                             │  generate (Sonnet) → lint  │
   │                        │◄── POST /internal/render ───│  render tool               │
@@ -451,7 +461,7 @@ Desktop                Coordinator                    Agent                     
 | Concurrent renders | `RENDER_CONCURRENCY` (default `NumCPU/2`) | Coordinator semaphore |
 | Coordinator → `/vision` | 45 s | Coordinator client |
 | Coordinator → `/explain` | 90 s (draft + critique + possible revise) | Coordinator client |
-| Coordinator → `/scenes/render` | 11 min (3 × (generate + render) + retrieval) | Coordinator client |
+| Coordinator → `/render` | 11 min (3 × (generate + render) + retrieval) | Coordinator client |
 | Agent → `/internal/render` | 130 s per call | Agent render tool |
 | Agent → Sonnet (`generate`) | 90 s, 1 retry on 5xx/429 | Agent |
 | Agent → Gemini (`/vision`) | 20 s, 1 retry on 5xx/429 | Agent |
@@ -487,7 +497,7 @@ curl -s localhost:8080/api/jobs -H 'Content-Type: application/json' \
 # → {"job_id":"j_7f3a9c21","poll_url":"/api/jobs/j_7f3a9c21"}
 
 # Poll
-curl -s localhost:8080/api/jobs/j_7f3a9c21 | jq '{status, scenes_done, scenes_total, video_url}'
+curl -s localhost:8080/api/jobs/j_7f3a9c21 | jq '{status, scenes_total, video_url}'
 
 # Watch until done
 watch -n1 'curl -s localhost:8080/api/jobs/j_7f3a9c21 | jq -r .status'
@@ -506,7 +516,7 @@ curl -s localhost:8000/vision -H 'Content-Type: application/json' \
   -d "{\"image_b64\":\"$(base64 -i problem.png | tr -d '\n')\",\"media_type\":\"image/png\",\"guardrails\":false}"
 
 curl -s localhost:8000/snippets/search -H 'Content-Type: application/json' \
-  -d '{"scene":{"index":0,"narration":"lo and hi start at the ends.","visual":"A row of boxes with two pointers."},"category":"algorithm","k":3}'
+  -d '{"scenes":[{"index":0,"narration":"lo and hi start at the ends.","visual":"A row of boxes with two pointers."}],"category":"algorithm","k":6}'
 
 # Corpus management
 curl -s 'localhost:8000/snippets?verified=false&origin=generated'
@@ -527,9 +537,9 @@ curl -s -X DELETE localhost:8000/snippets/66f1a2b3c4d5e6f7a8b9c0d1
 | `GET` | `/api/cache/{hash}` | Coordinator | Dev tools | Inspect cache | Could |
 | `GET` | `/healthz` | Coordinator | Desktop, dev | Health | Must |
 | `POST` | `/internal/render` | Coordinator | Agent (render tool) | Render one source in Docker | Must |
-| `POST` | `/vision` | Agent | Coordinator | Intake chain — transcribe | Must |
+| `POST` | `/vision` | Agent | Coordinator | Intake chain — read the screenshot | Must |
 | `POST` | `/explain` | Agent | Coordinator | Explainer agent — explanation + storyboard | Must |
-| `POST` | `/scenes/render` | Agent | Coordinator | Manim Generator agent — one scene to one clip | Must |
+| `POST` | `/render` | Agent | Coordinator | Manim Generator agent — the whole storyboard to one clip | Must |
 | `POST` | `/snippets/search` | Agent | Dev (debug) | Run the retrieve node alone | Should |
 | `POST` | `/codegen` | Agent | Dev (debug) | Run the generate node alone | Should |
 | `POST` | `/snippets/ingest` | Agent | Seed script, agent's ingest node | Add snippet | Must |

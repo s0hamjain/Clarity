@@ -16,13 +16,12 @@ const (
 	StatusQueued        Status = "queued"
 	StatusTranscribing  Status = "transcribing"
 	StatusExplaining    Status = "explaining"
-	StatusGenerating    Status = "generating"
-	StatusRendering     Status = "rendering"
-	StatusConcatenating Status = "concatenating"
-	StatusUploading     Status = "uploading"
-	StatusDone          Status = "done"
-	StatusFailed        Status = "failed"
-	StatusCancelled     Status = "cancelled"
+	StatusGenerating Status = "generating"
+	StatusRendering  Status = "rendering"
+	StatusUploading  Status = "uploading"
+	StatusDone       Status = "done"
+	StatusFailed     Status = "failed"
+	StatusCancelled  Status = "cancelled"
 )
 
 // IsTerminal reports whether the desktop app should stop polling.
@@ -40,8 +39,10 @@ type Job struct {
 	ProblemText *string `bson:"problem_text" json:"problem_text"`
 	Category    *string `bson:"category"     json:"category"`
 	Explanation *string `bson:"explanation"  json:"explanation"`
+	// ScenesTotal is the number of beats in the storyboard; informational
+	// only — the whole storyboard renders as one continuous script, not
+	// scene by scene, so there is no "done so far" count to report.
 	ScenesTotal int     `bson:"scenes_total" json:"scenes_total"`
-	ScenesDone  int     `bson:"scenes_done"  json:"scenes_done"`
 	VideoURL    *string `bson:"video_url"    json:"video_url"`
 	Cached      bool    `bson:"cached"       json:"cached"`
 	Guardrails  bool    `bson:"guardrails"   json:"guardrails"`

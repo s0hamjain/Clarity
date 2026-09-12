@@ -216,7 +216,7 @@ func TestGetJobShape(t *testing.T) {
 	}
 	for _, k := range []string{
 		"job_id", "status", "problem_hash", "problem_text", "category", "explanation",
-		"scenes_total", "scenes_done", "video_url", "cached", "guardrails", "error",
+		"scenes_total", "video_url", "cached", "guardrails", "error",
 		"created_at", "updated_at",
 	} {
 		if _, ok := body[k]; !ok {

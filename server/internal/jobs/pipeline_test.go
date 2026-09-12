@@ -92,7 +92,7 @@ func newRealPipelineWorker(t *testing.T, agentURL string) (*Worker, *recordingSt
 	}
 	js, cs := newRecordingStore(), newRecordingCache()
 	w := NewWorker(cfg, js, cs, agent.New(agentURL), stubConcat)
-	w.renderScene = stubSceneFunc
+	w.renderFunc = stubRenderFunc
 	return w, js, cs
 }
 
@@ -115,9 +115,6 @@ func TestRealPipelineProducesAnExplanationAndAVideo(t *testing.T) {
 	}
 	if final.ScenesTotal != len(f.explainResponse.Storyboard.Scenes) {
 		t.Errorf("scenes_total = %d, want %d", final.ScenesTotal, len(f.explainResponse.Storyboard.Scenes))
-	}
-	if final.ScenesDone != final.ScenesTotal {
-		t.Errorf("scenes_done = %d, want %d", final.ScenesDone, final.ScenesTotal)
 	}
 	if final.VideoURL == nil {
 		t.Error("done without a video_url")
@@ -246,79 +243,52 @@ func TestUnreachableAgentEndsTheJob(t *testing.T) {
 }
 
 // Rule 8 on the real path: the explanation is in the job record before any
-// scene work starts.
+// render work starts.
 func TestExplanationIsWrittenBeforeSceneWorkOnTheRealPath(t *testing.T) {
 	f := newFakeAgent(t)
 	w, js, _ := newRealPipelineWorker(t, f.server.URL)
 	runToTerminal(t, w, js, New("", false, "test"))
 
-	explainedAt, firstSceneAt := -1, -1
+	explainedAt, renderingAt := -1, -1
 	for i, fields := range js.snapshot() {
 		if _, ok := fields["explanation"]; ok && explainedAt < 0 {
 			explainedAt = i
 		}
-		if _, ok := fields["scenes_done"]; ok && firstSceneAt < 0 {
-			firstSceneAt = i
+		if s, ok := fields["status"].(Status); ok && s == StatusRendering && renderingAt < 0 {
+			renderingAt = i
 		}
 	}
 	if explainedAt < 0 {
 		t.Fatal("the explanation was never written")
 	}
-	if firstSceneAt >= 0 && explainedAt > firstSceneAt {
-		t.Fatalf("explanation written at write %d, after scene work began at %d", explainedAt, firstSceneAt)
+	if renderingAt >= 0 && explainedAt > renderingAt {
+		t.Fatalf("explanation written at write %d, after render work began at %d", explainedAt, renderingAt)
 	}
 }
 
-// A scene that fails is dropped; the job finishes with the rest (rule 16).
-func TestFailedSceneDoesNotFailTheJob(t *testing.T) {
+// A panic during the render must not take the pipeline goroutine down with it.
+func TestPanickingRenderIsContained(t *testing.T) {
 	f := newFakeAgent(t)
 	w, js, _ := newRealPipelineWorker(t, f.server.URL)
-	w.renderScene = func(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
-		if scene.Index == 0 {
-			return "", false // this one never worked out
-		}
-		return workDir + "/scene.mp4", true
+	w.renderFunc = func(ctx context.Context, scenes []agent.Scene, workDir string) (string, bool) {
+		panic("render exploded")
 	}
 
 	final := runToTerminal(t, w, js, New("", false, "test"))
 	if final.Status != StatusDone {
-		t.Fatalf("status = %q, want done", final.Status)
+		t.Fatalf("status = %q, want done — a panicking render must not fail the job", final.Status)
 	}
-	if final.VideoURL == nil {
-		t.Error("the surviving scene should still have produced a video")
-	}
-	// Dropped scenes still count towards scenes_done, or the UI stalls at 1/2.
-	if final.ScenesDone != final.ScenesTotal {
-		t.Errorf("scenes_done = %d, want %d", final.ScenesDone, final.ScenesTotal)
+	if final.VideoURL != nil {
+		t.Errorf("video_url = %v, want null after a panicking render", *final.VideoURL)
 	}
 }
 
-// A panic in one scene must not take out its siblings.
-func TestPanickingSceneIsContained(t *testing.T) {
-	f := newFakeAgent(t)
-	w, js, _ := newRealPipelineWorker(t, f.server.URL)
-	w.renderScene = func(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
-		if scene.Index == 0 {
-			panic("scene 0 exploded")
-		}
-		return workDir + "/scene.mp4", true
-	}
-
-	final := runToTerminal(t, w, js, New("", false, "test"))
-	if final.Status != StatusDone {
-		t.Fatalf("status = %q, want done — a panicking scene must not fail the job", final.Status)
-	}
-	if final.ScenesDone != final.ScenesTotal {
-		t.Errorf("scenes_done = %d, want %d", final.ScenesDone, final.ScenesTotal)
-	}
-}
-
-// Zero surviving scenes is `done` with no video and nothing cached, not a
-// failure — the explanation is still the product.
-func TestAllScenesFailedStillCompletes(t *testing.T) {
+// A render that does not work out is `done` with no video and nothing
+// cached, not a job failure — the explanation is still the product.
+func TestRenderFailureStillCompletes(t *testing.T) {
 	f := newFakeAgent(t)
 	w, js, cs := newRealPipelineWorker(t, f.server.URL)
-	w.renderScene = func(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
+	w.renderFunc = func(ctx context.Context, scenes []agent.Scene, workDir string) (string, bool) {
 		return "", false
 	}
 
@@ -332,46 +302,10 @@ func TestAllScenesFailedStillCompletes(t *testing.T) {
 	if final.Explanation == nil {
 		t.Error("the explanation must survive a total render failure")
 	}
+	if final.Error == nil || *final.Error != ErrRenderFailed {
+		t.Errorf("error = %v, want %q", final.Error, ErrRenderFailed)
+	}
 	if cs.len() != 0 {
-		t.Error("nothing may be cached when no scene survived")
-	}
-}
-
-// scenes_done must land on scenes_total and never go backwards. Incrementing a
-// counter under a lock but writing it outside one lets a later value overtake
-// an earlier one, and the progress counter sticks one short of the total.
-func TestScenesDoneIsMonotonicAndComplete(t *testing.T) {
-	f := newFakeAgent(t)
-	// Enough scenes, with jittered finishes, to make an ordering bug show up.
-	scenes := make([]agent.Scene, 12)
-	for i := range scenes {
-		scenes[i] = agent.Scene{Index: i, Narration: "n", Visual: "v", DurationSeconds: 8}
-	}
-	f.explainResponse.Storyboard.Scenes = scenes
-
-	w, js, _ := newRealPipelineWorker(t, f.server.URL)
-	w.renderScene = func(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
-		time.Sleep(time.Duration(scene.Index%4) * 2 * time.Millisecond)
-		return workDir + "/scene.mp4", true
-	}
-
-	final := runToTerminal(t, w, js, New("", false, "test"))
-	if final.ScenesDone != len(scenes) {
-		t.Errorf("scenes_done = %d, want %d", final.ScenesDone, len(scenes))
-	}
-
-	prev := 0
-	for _, fields := range js.snapshot() {
-		n, ok := fields["scenes_done"].(int)
-		if !ok {
-			continue
-		}
-		if n < prev {
-			t.Errorf("scenes_done went backwards: %d after %d", n, prev)
-		}
-		prev = n
-	}
-	if prev != len(scenes) {
-		t.Errorf("last scenes_done write was %d, want %d", prev, len(scenes))
+		t.Error("nothing may be cached when the render did not work out")
 	}
 }

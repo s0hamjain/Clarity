@@ -51,19 +51,13 @@
     transcribing: "Reading the problem…",
     explaining: "Writing explanation…",
     generating: "Planning the animation…",
-    concatenating: "Joining scenes…",
+    rendering: "Rendering the animation…",
     uploading: "Almost there…",
     done: "Done",
     cancelled: "Cancelled"
   };
 
   function statusText(job) {
-    if (job.status === "rendering") {
-      var total = job.scenes_total || 0;
-      var done = job.scenes_done || 0;
-      if (total) return "Rendering scene " + Math.min(done + 1, total) + " of " + total + "…";
-      return "Rendering…";
-    }
     return PLAIN_WORDS[job.status] || "Working…";
   }
 
