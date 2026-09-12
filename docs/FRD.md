@@ -19,7 +19,7 @@ If a word here is unfamiliar, the [README glossary](../README.md#glossary) defin
 |---|---|
 | **Job** | One request from screenshot to video, with an ID and a status that advances through fixed steps (§11.2). |
 | **Coordinator** | The Go server the desktop app talks to. Orchestrates; does no AI or rendering itself (§11). |
-| **Agent service** | The Python server that makes every Claude call (§10). |
+| **Agent service** | The Python server that makes every AI call — Gemini reads the screenshot, Claude explains and writes code (§10). |
 | **Storyboard / scene** | The model's plan for the animation: 2–5 scenes, each rendered separately then stitched (§10.2, §14). |
 | **Snippet corpus** | Verified working Manim examples in MongoDB; the 3 most similar are shown to the model before it writes code. This is the RAG part (§13). |
 | **Cache key** | The fingerprint of a problem; same fingerprint means reuse the existing video (§12). |
