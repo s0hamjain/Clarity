@@ -27,7 +27,17 @@
           />
           <div id="message" class="message" hidden></div>
         </div>
-        <div id="hint" class="hint"><kbd>↵</kbd></div>
+        <div id="hint" class="hint">
+          <kbd id="hint-recents" hidden>↓</kbd>
+          <kbd>↵</kbd>
+        </div>
+      </div>
+
+      <!-- Recents (FRD §15.1). Hidden until ↓ or "/" on an empty field; the
+           window itself grows to fit, so this never scrolls the page. -->
+      <div class="list-wrap" id="list-wrap" hidden>
+        <div class="list" id="list" role="listbox" aria-label="Recent captures"></div>
+        <p class="list-empty" id="list-empty" hidden>No recent captures yet.</p>
       </div>
     </div>
     <script src="spotlight.js"></script>
