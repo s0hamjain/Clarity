@@ -6,15 +6,50 @@ This file is the single point of entry for anyone — person or coding agent —
 
 ## 1. Project Summary
 
-The Clarity is a macOS desktop app that turns any math or algorithm problem on screen into a written explanation and a custom animated video. The flow: the student presses a hotkey and **drags a region** around the problem — in a PDF, an IDE, a browser, a slide. A clear Spotlight-style box **animates in**; they add context if they want (*"why is my binary search not working? visualize where it's messing up"*) or pull up a recent screenshot, and press **Enter**. A clear result box appears with the written explanation within seconds and the animated walkthrough about a minute later. They can **drag the box anywhere** so it doesn't cover the problem, and click **X** when done. The animation is generated for that specific problem: a model writes Manim code, grounded in retrieved examples of verified working Manim, and the system renders it.
+### What Clarity is
 
-The stack is a **Python menu-bar desktop app** (`rumps`, `pynput`, `pywebview`, built into a `.app` with PyInstaller and distributed as a `.dmg`), a **Go coordinator** (public HTTP API, job lifecycle, cache, per-scene render orchestration), a **Python agent service** (FastAPI; every Claude call; Voyage AI embeddings; retrieval over MongoDB Atlas Vector Search), **MongoDB Atlas** (jobs, cache, and the Manim snippet corpus), **Docker** (one isolated `manim-worker` container per scene), **ffmpeg** (concatenation without re-encoding), and **S3** (MinIO locally) for finished videos.
+A macOS menu-bar app for students. Press `⌘⇧E`, drag a box around any problem on your screen — a PDF, an IDE, a browser, a slide — and a translucent text box slides in. Type what's confusing you if you want (*"why is my binary search not working? visualize where it's messing up"*), or pick a recent screenshot, and press Enter. A floating result window shows a written, step-by-step explanation within seconds. About a minute later, a short animation made for that exact problem plays in the same window. Drag the window anywhere so it doesn't cover the problem; click X when you're done.
 
-Two decisions shape everything downstream. **The explanation is the product; the video is a reward that arrives after.** Rendering is slow and CPU-bound; the explanation is fast; they are delivered separately, the explanation the moment it exists. **The same problem is only rendered once.** Every transcribed problem is hashed with the user's question and the guardrails flag and checked against a cache before any work begins.
+The animation is generated, not looked up: an AI model writes [Manim](https://www.manim.community/) code for the problem, grounded in a library of verified working examples, and Clarity renders it.
 
-The system has four subsystems, one per person: (1) the **agent service** — transcription, explanation and storyboard generation, snippet retrieval, code generation and repair, corpus ingest; (2) the **render pipeline** — the Docker image, verified seed scenes, static pre-check, per-scene container rendering with a repair loop, ffmpeg concat, S3 upload; (3) the **coordinator** — the HTTP API the desktop app talks to, the Atlas job store and cache, fanning scenes out concurrently and joining them back; (4) the **desktop app and installer** — hotkey, region capture, the spotlight box with recents, the result box, and the build that turns it into something a user downloads.
+If you haven't read [README.md](README.md) yet — especially the glossary — do that first. This file assumes those words.
 
-Four people, four roles, four directories, no overlap: **P1 — AI** (`agent/`: every model call, prompts, retrieval), **P2 — Render** (`docker/`, `samples/`, `server/internal/render/`: Manim source → MP4 on S3), **P3 — Backend** (`server/`: API, job store, orchestration), **P4 — Desktop** (`desktop/`: everything the user sees and installs). Everyone works on their own branch until the end of a sprint, then everyone's work is merged together at a sync point with a fixed merge order and a rotating captain. Every role fakes its dependencies until the real thing lands, so nobody is ever blocked.
+### What happens when you press the hotkey
+
+1. The desktop app takes the screenshot and sends it (plus your text) to the **coordinator**, a Go server on your Mac. The coordinator creates a **job** and replies instantly with a job ID. The desktop app starts polling that job once a second.
+2. The coordinator asks the **agent service** (Python, the only thing that talks to Claude) to read the problem off the screenshot, word for word.
+3. The coordinator fingerprints that text. If the same problem has been asked before, it returns the stored explanation and video — done in under a second.
+4. Otherwise it asks the agent service for a written explanation and a **storyboard**: 2–5 short scenes describing what the animation should show. **The explanation is saved the instant it arrives, and the result box shows it.** This is the moment the user stops waiting.
+5. For each scene, in parallel: the agent service finds the 3 most similar verified **snippets** from the example library (vector search in MongoDB Atlas), writes Manim code imitating them, and the **render pipeline** runs that code inside a locked-down Docker container. If the code crashes, the error goes back to the model and it tries again, up to 3 times. A scene that never works is dropped; the others carry on.
+6. Finished scenes are stitched into one video (no re-encoding), uploaded to S3, and the job is marked done. The result box plays it. Successful code is saved back into the library as an unverified example for a human to review.
+
+If rendering fails entirely, the job still finishes: the explanation stays on screen with a quiet "the animation didn't render this time." The explanation never depends on the video.
+
+### The stack
+
+| Part | Tech | Job |
+|---|---|---|
+| Desktop app | Python — `rumps` (menu bar), `pynput` (hotkey), `pywebview` (the two floating windows), PyInstaller → `.dmg` | Everything the user sees and installs |
+| Coordinator | Go, `net/http` | Job lifecycle, cache, calling the other parts in order, fanning scenes out in parallel |
+| Agent service | Python, FastAPI, `anthropic` SDK | Every Claude call: transcription, explanation, code, repair; plus the snippet library |
+| Render pipeline | Go + Docker + ffmpeg | Manim code → sandboxed render → repair loop → stitched MP4 on S3 |
+| MongoDB Atlas | Free M0 cluster | Jobs, cache, and the snippet library (with a vector-search index) |
+| Claude Opus 5 | Anthropic API | The model |
+| Voyage AI | `voyage-code-3` | Turns text into embeddings for vector search |
+| S3 (MinIO locally) | | Finished videos |
+
+### The team
+
+Four people, four roles, four directories, no overlap:
+
+| Role | Person | Directory | One sentence |
+|---|---|---|---|
+| AI | P1 | `agent/` | Make the model produce correct JSON: transcription, explanation, code, repair. |
+| Render | P2 | `docker/`, `samples/`, `server/internal/render/` | Turn Manim code into an MP4 on S3, safely; write the verified example scenes. |
+| Backend | P3 | `server/` (rest) | Run the job: API, database, call P1 and P2 in order, report status. |
+| Desktop | P4 | `desktop/` | Everything the user sees and installs. |
+
+Five time-boxed sprints. Everyone works on their own branch until the end of a sprint, then everyone's work is merged into `main` in a fixed order (P3 → P1 → P2 → P4) and we run a checklist together. Every role fakes the parts it depends on until the real thing lands, so nobody waits on anybody.
 
 ---
 
