@@ -90,9 +90,20 @@ The REST API reference for both services — every endpoint with method, path, c
 
 Full environment setup: prerequisites, clone and branch strategy, Anthropic and Voyage API keys, MongoDB Atlas cluster and Vector Search index creation, Docker and the `manim-worker` build with a container smoke test, MinIO, the agent service, the coordinator, the desktop app in development mode with the macOS permission dance, building the `.app`/`.dmg`/`.pkg`, environment files, running everything, a 15-point verification checklist, and common problems.
 
-### docs/WORK_SPLIT.md
+### docs/WORK_SPLIT.md and the four per-person files
 
-Four paths (P1 agent, P2 render, P3 coordinator, P4 desktop) across five sprints with a sync point after each. Contains the path overview and what each fakes; per-sprint, per-person steps with FRD references; sync-point checklists; the **Merge Protocol** (branch naming, rebase-before-sync, merge order P3 → P1 → P2 → P4, rotating captain, tagging); file ownership; and the dependency graph with mitigations.
+`WORK_SPLIT.md` is the team view: the four roles and why they don't overlap, the four contracts where they meet, the sprint calendar, the sync-point checklists we run together, the **Merge Protocol** (branch naming, rebase-before-sync, merge order P3 → P1 → P2 → P4, rotating captain, tagging), and the dependency graph.
+
+**Your tasks are in your own file.** Each is self-contained — open it and you know exactly what to do:
+
+| Person | File | Role |
+|---|---|---|
+| P1 | [docs/P1_AI.md](docs/P1_AI.md) | The Python service that makes every Claude call |
+| P2 | [docs/P2_RENDER.md](docs/P2_RENDER.md) | Docker sandbox, Manim samples, video pipeline |
+| P3 | [docs/P3_BACKEND.md](docs/P3_BACKEND.md) | The Go coordinator: API, database, orchestration |
+| P4 | [docs/P4_DESKTOP.md](docs/P4_DESKTOP.md) | Menu-bar app, the two windows, the installer |
+
+Each file has: your job in plain words · what you own and never touch · the interfaces you implement or consume · setup · files to create · every sprint's steps with "done when" checklists · your merge steps · your rules · what to do if blocked.
 
 ### FILE_STRUCTURE.md
 
@@ -173,7 +184,7 @@ Every task is specified in `docs/WORK_SPLIT.md`. This table is the index.
 | **4 Cache, guardrails, installer** | 11–15 | Survives real use; someone else can install it | Guardrails pass rate ≥ 8/10, promote/delete generated snippets, prompt tuning + `PromptVersion` | Cleanup on every exit path, timeout kills containers, `-qm` path, seeds for reported error classes | Two-machine cache test, failure injection, `503` on overload | Self-signed cert, `build_app.sh`, `build_dmg.sh`, install on a second Mac, permission persists across rebuild |
 | **5 Freeze + release** | 15–19 | Everything together; tagged release with installer | Freeze prompts, pre-warm cache | `-qm` release, clean-machine image build | All-green `/healthz` from fresh boot | `build_pkg.sh`, GitHub Release `v0.1.0` with DMG/PKG, install from the release URL |
 
-Sync-point checklists are in WORK_SPLIT.md under each sprint.
+Full steps for each cell are in your per-person file (`docs/P1_AI.md` … `docs/P4_DESKTOP.md`). Sync-point checklists are in `docs/WORK_SPLIT.md`.
 
 ---
 
@@ -198,8 +209,8 @@ Sync-point checklists are in WORK_SPLIT.md under each sprint.
 | Find an environment variable | FRD §22; SETUP §12 |
 | Set up a service or key | SETUP §3–7 |
 | Grant macOS permissions or build the installer | SETUP §10–11 |
-| Find my tasks this sprint | §5 above; WORK_SPLIT.md → Sprint N → your path |
+| Find my tasks this sprint | Your file: `docs/P1_AI.md` / `P2_RENDER.md` / `P3_BACKEND.md` / `P4_DESKTOP.md` → Sprint N |
 | Merge at a sync point | WORK_SPLIT.md → Merge Protocol |
-| Find who owns a file | WORK_SPLIT.md → File Ownership Summary |
+| Find who owns a file | WORK_SPLIT.md → Roles; FILE_STRUCTURE.md |
 | See what blocks whom | WORK_SPLIT.md → Dependency Graph |
 | See an unresolved decision | FRD §24 |

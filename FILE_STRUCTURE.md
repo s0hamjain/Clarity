@@ -14,7 +14,11 @@ Clarity/
 │   ├── FRD.md                 # Technical specification — every shape, schema, route, rule. Source of truth.
 │   ├── API.md                 # REST API reference — every endpoint on both services, errors, lifecycle, limits.
 │   ├── SETUP.md               # Environment setup for every service and tool; verification checklist.
-│   └── WORK_SPLIT.md          # P1–P4 across five sprints; sync points; merge protocol; ownership.
+│   ├── WORK_SPLIT.md          # Team view: roles, contracts, sprint calendar, sync checklists, merge protocol.
+│   ├── P1_AI.md               # P1's complete task list — agent service.
+│   ├── P2_RENDER.md           # P2's complete task list — Docker, samples, render pipeline.
+│   ├── P3_BACKEND.md          # P3's complete task list — coordinator.
+│   └── P4_DESKTOP.md          # P4's complete task list — desktop app + installer.
 ├── samples/                   # P2 · verified Manim seed scenes = the RAG corpus seed
 ├── docker/                    # P2 · the manim-worker image
 ├── agent/                     # P1 · Python agent service

@@ -95,7 +95,7 @@ p3/sprint-N-short-description
 p4/sprint-N-short-description
 ```
 
-Merge to `main` **only at sprint sync points**, in the order and with the protocol in `docs/WORK_SPLIT.md → Merge Protocol`. The one exception: a change to `docs/FRD.md` goes to `main` immediately, in its own commit, and is announced — everyone is building against it.
+Merge to `main` **only at sprint sync points**, in the order and with the protocol in `docs/WORK_SPLIT.md → Merge Protocol`. Your own tasks are in `docs/P1_AI.md` … `docs/P4_DESKTOP.md`. The one exception: a change to `docs/FRD.md` goes to `main` immediately, in its own commit, and is announced — everyone is building against it.
 
 ---
 

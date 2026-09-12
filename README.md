@@ -56,14 +56,15 @@ Supporting services: **MongoDB Atlas** (stores jobs, the cache, and a library of
 1. **This page** — you're doing it.
 2. **[AGENTS.md](AGENTS.md)** — the project in one page: what each part does, the rules everyone follows, what each person builds each sprint. *15 minutes.*
 3. **[docs/SETUP.md](docs/SETUP.md)** — get everything running on your Mac. *An hour, mostly waiting on Docker.*
-4. **[docs/WORK_SPLIT.md](docs/WORK_SPLIT.md)** — find your role (P1–P4) and your tasks for the current sprint.
+4. **Your own file** — [P1_AI.md](docs/P1_AI.md), [P2_RENDER.md](docs/P2_RENDER.md), [P3_BACKEND.md](docs/P3_BACKEND.md), or [P4_DESKTOP.md](docs/P4_DESKTOP.md). Everything you personally build, sprint by sprint. [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md) is the team view: roles, merge protocol, sync checklists.
 5. **[docs/FRD.md](docs/FRD.md)** and **[docs/API.md](docs/API.md)** — the detailed spec. Don't read these cover to cover; open the section your task points to.
 
 | Doc | Read it when you need… |
 |---|---|
 | [AGENTS.md](AGENTS.md) | The overview, the rules, the sprint plan at a glance |
 | [docs/SETUP.md](docs/SETUP.md) | To install anything or run the system |
-| [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md) | Your tasks, the sync-point checklist, how we merge |
+| [docs/P1_AI.md](docs/P1_AI.md) · [P2_RENDER.md](docs/P2_RENDER.md) · [P3_BACKEND.md](docs/P3_BACKEND.md) · [P4_DESKTOP.md](docs/P4_DESKTOP.md) | Your tasks — one file per person, self-contained |
+| [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md) | Team view: roles, contracts, sprint calendar, sync checklists, how we merge |
 | [docs/FRD.md](docs/FRD.md) | The exact behavior of anything — the spec |
 | [docs/API.md](docs/API.md) | Any HTTP endpoint: request, response, errors |
 | [FILE_STRUCTURE.md](FILE_STRUCTURE.md) | Where a file goes and who owns it |
