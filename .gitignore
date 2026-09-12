@@ -26,3 +26,8 @@ client/.angular/
 .DS_Store
 .idea/
 .vscode/
+dist/
+build/
+*.spec
+*.dmg
+*.pkg
