@@ -237,3 +237,37 @@ body {
 #video-drag-handle:active {
   cursor: grabbing;
 }
+
+/* Popped out: the inline player is replaced by a line saying where the video
+ * went, so the box never looks like it simply lost the animation. */
+.popped {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.popped-text {
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.popped-back {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.popped-back:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

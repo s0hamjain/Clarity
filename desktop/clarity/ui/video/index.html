@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Rule 20: nothing here loads from the network except the video itself,
+         which is what media-src allows. No connect-src at all — this page
+         never polls; the result box it came from still owns that. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; style-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; media-src http: https: blob:" />
+    <title>Clarity</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="video.css" />
+  </head>
+  <body>
+    <div class="frame" id="frame">
+      <!-- The drag bar. Deliberately the only wide always-draggable strip:
+           the player below opts out so its controls work. -->
+      <header class="bar" id="bar">
+        <span class="grip" aria-hidden="true"></span>
+        <span class="label">Drag me anywhere</span>
+        <button id="close" class="close no-drag" type="button" aria-label="Put the video back">✕</button>
+      </header>
+
+      <div class="stage">
+        <video id="video" class="no-drag" controls autoplay loop muted playsinline></video>
+      </div>
+    </div>
+
+    <script src="video.js"></script>
+  </body>
+</html>

@@ -398,7 +398,7 @@ def start(webview) -> None:
 
 
 def run(kind: str) -> int:
-    """Child entry point: `python -m clarity --window-host {spotlight,result}`.
+    """Child entry point: `python -m clarity --window-host {spotlight,result,overlay,video}`.
 
     Logs go to stderr so stdout stays clean for the protocol.
     """
@@ -415,6 +415,8 @@ def run(kind: str) -> int:
         from .result_window import run_window
     elif kind == "overlay":
         from .overlay_window import run_window
+    elif kind == "video":
+        from .video_window import run_window
     else:
         log.error("unknown window kind %r", kind)
         return 2

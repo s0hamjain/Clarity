@@ -49,6 +49,9 @@ class ResultBox:
     explanation, so the app can post the notification from FRD §15.1.
     `on_update_recent(recent_id, fields)` fires on every poll that learned
     something, and the app writes it to the local recent (rule 21).
+    `on_pop_out_video(job_id, url)` fires when the user detaches the video, and
+    `on_close_popped_video(job_id)` when they send it back — the app owns that
+    window, because only it can spawn a process.
     """
 
     def __init__(
@@ -61,12 +64,16 @@ class ResultBox:
         on_close: Callable[[str], None] | None = None,
         on_retry: Callable[[str], None] | None = None,
         on_update_recent: Callable[[str, dict[str, Any]], None] | None = None,
+        on_pop_out_video: Callable[[str, str], None] | None = None,
+        on_close_popped_video: Callable[[str], None] | None = None,
         local: dict[str, Any] | None = None,
         recent_id: str | None = None,
     ) -> None:
         self.job_id = job_id
         self.box = box
         self.recent_id = recent_id
+        self._on_pop_out_video = on_pop_out_video
+        self._on_close_popped_video = on_close_popped_video
         self._on_cancel = on_cancel
         self._on_explanation = on_explanation
         self._on_close = on_close
@@ -91,6 +98,10 @@ class ResultBox:
     def close(self) -> None:
         self._proc.close()
 
+    def video_returned(self) -> None:
+        """The popped-out video window is gone; show the inline player again."""
+        self._proc.command("video_returned")
+
     @property
     def alive(self) -> bool:
         return self._proc.alive
@@ -107,6 +118,13 @@ class ResultBox:
         elif kind == "retry":
             if self._on_retry is not None:
                 self._on_retry(self.job_id)
+        elif kind == "pop_out_video":
+            url = event.get("video_url")
+            if self._on_pop_out_video is not None and url:
+                self._on_pop_out_video(self.job_id, str(url))
+        elif kind == "close_popped_video":
+            if self._on_close_popped_video is not None:
+                self._on_close_popped_video(self.job_id)
         elif kind == "recent":
             # Only the app process writes recents.json, so the page's updates
             # come back here rather than being written in the window (rule 21).
@@ -201,6 +219,18 @@ class _JsApi:
         # see overlay_window.py's docstring for the repro).
         AppHelper.callAfter(do_minimize)
 
+    def pop_out_video(self, video_url: str) -> None:
+        """Detach the video into its own draggable window.
+
+        Only the menu-bar app can spawn a window process, so this window asks
+        rather than opens (window_host's protocol docstring).
+        """
+        window_host.emit("pop_out_video", job_id=self.job_id, video_url=video_url)
+
+    def close_popped_video(self) -> None:
+        """Bring the video back inline — the app closes the popped window."""
+        window_host.emit("close_popped_video", job_id=self.job_id)
+
     def explanation_shown(self) -> None:
         """First non-null explanation — the app posts a notification."""
         if not self._explained:
@@ -278,6 +308,11 @@ def run_window(payload: dict[str, Any]) -> None:
             # Read back what the page is actually showing, so the failure states
             # in FRD §19 can be checked without a person looking at them.
             window_host.emit("dump", state=window_host.evaluate(window, "window.clarityDump()"))
+            return
+        if message.get("cmd") == "video_returned":
+            # The popped-out window went away — by its own X, or because the
+            # app closed it. Put the inline player back either way.
+            window_host.evaluate(window, "window.clarityVideoReturned && window.clarityVideoReturned()")
             return
         if message.get("cmd") != "close":
             return

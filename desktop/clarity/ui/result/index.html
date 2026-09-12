@@ -38,9 +38,15 @@
           <button id="retry" class="retry no-drag" type="button">Retry</button>
         </div>
 
+        <div class="popped no-drag" id="popped" hidden>
+          <span class="popped-text">Playing in its own window.</span>
+          <button id="video-popback" class="popped-back" type="button">Bring it back</button>
+        </div>
+
         <div class="video-wrap no-drag" id="video-wrap" hidden>
           <video id="video" controls autoplay muted playsinline></video>
           <div class="video-actions">
+            <button id="video-popout" class="video-action" type="button" title="Pop out — drag it anywhere on screen">⧉ Pop out</button>
             <button id="video-fullscreen" class="video-action" type="button" title="Full screen">⛶</button>
             <div
               id="video-drag-handle"

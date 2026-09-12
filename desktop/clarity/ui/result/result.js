@@ -33,11 +33,16 @@
   var videoWrap = document.getElementById("video-wrap");
   var videoEl = document.getElementById("video");
   var videoDragHandle = document.getElementById("video-drag-handle");
+  var videoPopoutEl = document.getElementById("video-popout");
+  var poppedEl = document.getElementById("popped");
+  var videoPopbackEl = document.getElementById("video-popback");
   var videoFullscreenEl = document.getElementById("video-fullscreen");
   var closeEl = document.getElementById("close");
   var minimizeEl = document.getElementById("minimize");
 
   var state = {
+    videoUrl: null,
+    poppedOut: false,
     explained: false,
     videoShown: false,
     finished: false, // stop polling
@@ -91,9 +96,40 @@
   function showVideo(url) {
     if (state.videoShown || !url) return;
     state.videoShown = true;
+    state.videoUrl = url;
     videoEl.src = url;
-    videoWrap.hidden = false;
+    videoWrap.hidden = state.poppedOut;
+    poppedEl.hidden = !state.poppedOut;
   }
+
+  /* Pop out / bring back. The video moves to its own draggable window so it
+   * can sit next to the problem it explains, rather than wherever this panel
+   * happens to be. The host owns that window's lifetime — it tells us when it
+   * closes, including when the user closes it from over there. */
+  function popOut() {
+    if (state.poppedOut || !state.videoUrl) return;
+    state.poppedOut = true;
+    videoEl.pause();
+    videoWrap.hidden = true;
+    poppedEl.hidden = false;
+    api("pop_out_video", state.videoUrl);
+  }
+
+  function popBack() {
+    if (!state.poppedOut) return;
+    api("close_popped_video");
+    videoReturned();
+  }
+
+  /* Called both by the Bring-it-back button and by the host when the popped
+   * window goes away on its own, so the two paths can't disagree. */
+  function videoReturned() {
+    state.poppedOut = false;
+    poppedEl.hidden = true;
+    videoWrap.hidden = !state.videoShown;
+  }
+
+  window.clarityVideoReturned = videoReturned;
 
   function showNote(text) {
     noteEl.textContent = text;
@@ -247,6 +283,9 @@
    * attachments: WebKit downloads the URL itself once the drop lands
    * somewhere, entirely outside this page's own fetch/XHR — no local
    * download step or native drag session needed here. */
+  videoPopoutEl.addEventListener("click", popOut);
+  videoPopbackEl.addEventListener("click", popBack);
+
   videoDragHandle.addEventListener("dragstart", function (event) {
     var url = videoEl.currentSrc || videoEl.src;
     if (!url) {
@@ -280,7 +319,8 @@
       note: noteEl.hidden ? null : noteEl.textContent,
       failure: failureEl.hidden ? null : failureTextEl.textContent,
       retry: !failureEl.hidden && !retryEl.hidden,
-      video: videoWrap.hidden ? null : videoEl.getAttribute("src")
+      video: videoWrap.hidden ? null : videoEl.getAttribute("src"),
+      popped_out: state.poppedOut
     };
   };
   document.addEventListener("keydown", function (event) {

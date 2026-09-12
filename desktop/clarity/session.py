@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from . import capture as capture_mod
 from . import result_window
+from . import video_window
 from . import window_host
 from .capture import Capture
 from .client import ApiError, Client, Unreachable
@@ -25,6 +26,7 @@ from .overlay_window import Overlay
 from .recents import Recents
 from .result_window import ResultBox
 from .spotlight_window import Spotlight
+from .video_window import VideoWindow
 from .window_host import Box
 
 log = logging.getLogger(__name__)
@@ -63,6 +65,8 @@ class Session:
         # closing over the capture it was opened with.
         self._pending: Capture | None = None
         self._results: dict[str, ResultBox] = {}
+        # Popped-out video windows, at most one per job.
+        self._videos: dict[str, VideoWindow] = {}
         self._last_box: Box | None = None
         # Set between accepting a submit and the result box existing, so the
         # spotlight box closing in that gap doesn't look like "nothing is open".
@@ -204,6 +208,8 @@ class Session:
             on_close=self._result_closed,
             on_retry=self._retry,
             on_update_recent=self._update_recent,
+            on_pop_out_video=self._pop_out_video,
+            on_close_popped_video=self._close_popped_video,
             local=local,
             recent_id=recent_id,
         )
@@ -292,15 +298,72 @@ class Session:
         if idle:
             self._idle()
 
+    # -- the popped-out video ------------------------------------------------
+
+    def _pop_out_video(self, job_id: str, video_url: str) -> None:
+        """Open the video in its own draggable window, beside its result box.
+
+        Only this process can spawn a window, so the result box asks and this
+        answers. A second request for a job that already has one is ignored
+        rather than opening a duplicate.
+        """
+        with self._lock:
+            if job_id in self._videos:
+                return
+            # Where the box *opened*, which is not where it is if the user has
+            # since dragged it: pywebview gives the app no way to read a
+            # window's current origin back out. Worst case the video appears
+            # beside the box's original spot — and the whole point is that the
+            # user can then drag it wherever they want.
+            anchor = self._results[job_id].box if job_id in self._results else None
+
+        window = VideoWindow(
+            job_id,
+            video_url=video_url,
+            box=video_window.box_beside(anchor),
+            on_close=self._video_closed,
+        )
+        with self._lock:
+            # The box may have closed while the process was starting; if it
+            # did, this video has nothing to belong to.
+            if job_id not in self._results:
+                stale = window
+            else:
+                self._videos[job_id] = window
+                stale = None
+        if stale is not None:
+            stale.close()
+
+    def _close_popped_video(self, job_id: str) -> None:
+        """"Bring it back" in the result box."""
+        with self._lock:
+            window = self._videos.pop(job_id, None)
+        if window is not None:
+            window.close()
+
+    def _video_closed(self, job_id: str) -> None:
+        """The popped window went away — by its own X, by "bring it back", or
+        because the result box closed. Tell the box so its inline player comes
+        back; it is harmless if the box is already gone."""
+        with self._lock:
+            self._videos.pop(job_id, None)
+            result = self._results.get(job_id)
+        if result is not None and result.alive:
+            result.video_returned()
+
     def _result_closed(self, job_id: str) -> None:
         with self._lock:
             self._results.pop(job_id, None)
+            video = self._videos.pop(job_id, None)
             self._submissions.pop(job_id, None)
             idle = not self._results and self._spotlight is None and not self._opening
             if not self._results:
                 # Nothing is open, so the next box starts from the middle again
                 # instead of continuing to march down the screen.
                 self._last_box = None
+        # A popped-out video belongs to its box; it must not outlive it.
+        if video is not None:
+            video.close()
         if idle:
             self._idle()
 
@@ -372,8 +435,11 @@ class Session:
     def close_all(self) -> None:
         with self._lock:
             windows = list(self._results.values())
+            videos = list(self._videos.values())
             spotlight = self._spotlight
             overlay = self._overlay
+        for window in videos:
+            window.close()
         for window in windows:
             window.close()
         if spotlight is not None:
