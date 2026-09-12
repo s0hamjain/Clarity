@@ -11,11 +11,16 @@ __pycache__/
 # go
 server/bin/
 
-# manim + render output
+# manim + render output (final videos live in S3, not the repo)
 media/
 renders/
 server/renders/
 *.mp4
+
+# angular / node
+client/node_modules/
+client/dist/
+client/.angular/
 
 # os / editor
 .DS_Store

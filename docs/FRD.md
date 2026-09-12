@@ -8,15 +8,17 @@ the *what*, that one is the *how it's wired*.
 
 A student hits a hotkey while looking at a hard math or algorithm problem in
 their browser, and gets a written step-by-step explanation within seconds and a
-custom animated video explaining the same problem about a minute later.
+custom animated video — rendered as several scenes in parallel and joined into
+one clip — explaining the same problem about a minute later.
 
 ## Users
 
 - **Primary:** a CMU student stuck on a problem set, in a browser, at 1am.
 - **Secondary:** the same student with the problem in an IDE or a PDF — they
-  paste a screenshot into a web page instead.
+  paste a screenshot into the web app instead.
 - **Tertiary:** the hackathon judge watching the demo. Optimize for the first
-  two and the third takes care of itself.
+  two and the third takes care of itself — guardrails mode exists mainly to
+  give the third an honest answer to "isn't this cheating?"
 
 ## Functional requirements
 
@@ -28,9 +30,9 @@ demo is noticeably better with it. **Could** = if there's time.
 | # | Req | Priority |
 |---|---|---|
 | F1 | A global hotkey in Chrome captures the visible tab as a PNG. | Must |
-| F2 | A side panel opens on capture with an optional free-text question field. | Must |
-| F3 | The capture plus the question are sent to the server in one request. | Must |
-| F4 | A plain web page accepts a pasted or dropped image and sends the same request. | Should |
+| F2 | A side panel opens on capture with an optional free-text question field and a guardrails toggle. | Must |
+| F3 | The capture, the question, and the guardrails flag are sent to the server in one request. | Must |
+| F4 | An Angular web app accepts a pasted or dropped image and sends the same request. | Should |
 | F5 | Capture on pages Chrome refuses (`chrome://`, Web Store) shows a clear message rather than failing silently. | Should |
 
 ### Understanding the problem
@@ -49,65 +51,77 @@ demo is noticeably better with it. **Could** = if there's time.
 | F10 | The explanation reaches the user **as soon as it exists**, before any video work begins. Target: under 10s from hotkey. | Must |
 | F11 | The user's typed question shapes the explanation. | Must |
 | F12 | The explanation is preserved and shown even if every later step fails. | Must |
+| F13 | With guardrails on, the explanation teaches the method and reasoning but stops short of the final answer. | Should |
 
 ### Animation
 
 | # | Req | Priority |
 |---|---|---|
-| F13 | A storyboard (2–5 beats, one scene) is produced describing what the animation shows. | Must |
-| F14 | The storyboard is turned into Manim CE source and rendered to an MP4. | Must |
-| F15 | Rendering failures are fed back to the model for repair, up to 3 attempts. | Should |
-| F16 | Generated code passes a static pre-check (parses, no banned imports) before it is run. | Must |
-| F17 | The video plays inline in the side panel when ready, without a reload. | Must |
-| F18 | Narration text from the storyboard appears on screen in the video. | Should |
-| F19 | The storyboard favors things text can't show — plotted functions, pointers walking structures, shapes transforming — over animated algebra. | Should |
+| F14 | A storyboard of 2–5 independent scenes is produced, each describing what one animation segment shows. | Must |
+| F15 | Each scene is grounded in a relevant snippet retrieved from a Manim-doc corpus before it is generated. | Should |
+| F16 | Each scene is turned into its own Manim CE source file and rendered to its own MP4 clip, **in its own isolated container**, concurrently with the other scenes in the same job. | Must |
+| F17 | Generated code passes a static pre-check (parses, no banned imports) before it is run, in addition to running in an isolated, network-disabled container. | Must |
+| F18 | A scene that fails to render is fed back to the model for repair, up to 3 attempts, without affecting the other scenes in the job. | Should |
+| F19 | A scene that exhausts repair is dropped; the job still completes with whatever scenes succeeded. | Should |
+| F20 | Finished scene clips are joined into one video without re-encoding. | Must |
+| F21 | The finished video uploads to S3 and the client streams it directly from there. | Must |
+| F22 | The video plays inline in the panel when ready, without a reload. | Must |
+| F23 | Narration text from the storyboard appears on screen in the video. | Should |
+| F24 | Each scene favors things text can't show — plotted functions, pointers walking structures, shapes transforming — over animated algebra. | Should |
+| F25 | With guardrails on, the animation shows the technique without resolving to the literal final answer. | Should |
 
 ### Caching
 
 | # | Req | Priority |
 |---|---|---|
-| F20 | The same problem + same question, seen again, returns the existing video without re-running the pipeline. | Must |
-| F21 | A cache hit returns in under one second. | Should |
-| F22 | Changing a prompt invalidates the cache (via `PromptVersion`). | Must |
-| F23 | Failed renders are never cached. | Must |
+| F26 | The same problem + same question + same guardrails setting, seen again, returns the existing video and explanation without re-running the pipeline. | Must |
+| F27 | A cache hit returns in under one second. | Should |
+| F28 | Changing a prompt invalidates the cache (via `PromptVersion`). | Must |
+| F29 | A job with zero surviving scenes is never cached. | Must |
+| F30 | Cached videos are removed from S3 automatically after a fixed retention period, without a custom cleanup process. | Should |
 
 ### Status and feedback
 
 | # | Req | Priority |
 |---|---|---|
-| F24 | The client shows which stage the job is in (transcribing / explaining / rendering). | Should |
-| F25 | A job that fails after the explanation shows the explanation plus a note that the animation did not render. | Must |
-| F26 | A job that fails before the explanation shows a plain error. | Must |
+| F31 | The client shows which stage the job is in, including a per-scene progress count ("rendering scene 2 of 3"). | Should |
+| F32 | A job that finishes with at least one explanation but no video shows the explanation plus a note that the animation did not fully render. | Must |
+| F33 | A job that fails before the explanation shows a plain error. | Must |
 
 ## Non-functional
 
 | # | Req |
 |---|---|
 | N1 | Text explanation latency: **< 10s** p50 on a cold request. |
-| N2 | Video latency: **< 120s** p50 on a cold request, including up to 3 repair attempts. |
-| N3 | Concurrent renders are capped (the CPU-bound part). Number is a config knob; start at `runtime.NumCPU() / 2`. |
-| N4 | One bad scene cannot wedge a worker — every render has a hard timeout. |
-| N5 | Everything runs on one laptop for the demo. No cloud dependency except the Claude API. |
+| N2 | Video latency: **< 120s** p50 on a cold request, including up to 3 repair attempts per scene, run concurrently across scenes. |
+| N3 | Concurrent scene renders are capped (the CPU-bound part). Number is a config knob; start at `runtime.NumCPU() / 2`. |
+| N4 | One bad scene cannot wedge a worker or the rest of the job — every render has a hard per-container timeout, and one scene's failure never blocks the others. |
+| N5 | Everything runs on one laptop for the demo, using Docker for render isolation and a local S3-compatible store (MinIO) so no laptop needs real AWS credentials to develop against. Real AWS is a config swap, not a code change, for the presenting machine. |
 | N6 | The whole system starts with one command per service (see [SETUP.md](SETUP.md)). |
 
 ## Out of scope — for now
 
-Deferred, not deleted. See CONTRACTS §4 for where each slots back in.
+Deferred, not deleted. See CONTRACTS §5 for where each slots back in.
 
-- Docker isolation of render workers
-- Multi-scene animations and FFmpeg concat
-- S3 storage
-- Narration audio / TTS
-- Any verification that the explanation is *correct*
+- A real vector database for Manim-doc retrieval (an in-memory index over a
+  fixed corpus is enough for one weekend)
+- Narration audio / TTS (conflicts with the no-re-encode concat design)
+- Any verification that the explanation or generated code is *correct*
 - Accounts, history, anything persistent per user
 - Mobile, Firefox, Safari
+- Automated enforcement of guardrails mode (it's a prompt instruction,
+  spot-checked by hand, not a filter)
 
 ## Open questions
 
 - **Determinism of transcription** without `temperature=0` — CONTRACTS §1.
 - **Cache hit rate in practice** — Sprint 1 experiment.
-- **Is this a cheating tool?** Needs a real answer, not a disclaimer, before
-  Saturday. The honest version: the storyboard is built to teach the method,
-  not produce the answer, and the prompt should be written that way.
-- **Privacy.** The screenshot is the whole viewport. For the demo we say so out
-  loud; for anything real it needs a crop step.
+- **Embeddings model for Manim-doc retrieval** — local model preferred over an
+  API call, to keep it off the latency-critical path. CONTRACTS §1.
+- **Does guardrails mode actually withhold the answer?** Needs a human
+  spot-check on real problems, not just a prompt review.
+- **Is this a cheating tool?** Guardrails mode is the real answer, not a
+  disclaimer — but only if it demonstrably works.
+- **Privacy.** The screenshot is the whole viewport, and it now lives on S3
+  instead of only local disk. For the demo we say so out loud; for anything
+  real it needs a crop step and a real retention policy.
