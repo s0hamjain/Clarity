@@ -116,7 +116,7 @@ def seed_snippets():
 
     if docs:
         print(f"Upserting {len(docs)} seed snippets into MongoDB Atlas vector store...")
-        store.add_documents(docs=docs, ids=ids)
+        store.add_documents(documents=docs, ids=ids)
         print("Successfully seeded snippets.")
 
 
@@ -125,7 +125,7 @@ def main():
     parser.add_argument("--create-index", action="store_true", help="Create the snippets_vector Atlas index")
     args = parser.parse_args()
 
-    if args.create-index:
+    if args.create_index:
         create_vector_search_index()
 
     seed_snippets()
