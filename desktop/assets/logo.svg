@@ -1,26 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#2451D6"/>
-      <stop offset="100%" stop-color="#1330A6"/>
+      <stop offset="0%" stop-color="#3730A3"/>
+      <stop offset="100%" stop-color="#1E3A8A"/>
     </linearGradient>
-    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="cGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="100%" stop-color="#E7F0FF"/>
+      <stop offset="100%" stop-color="#DCE7FF"/>
     </linearGradient>
-    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
-      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#0A1852" flood-opacity="0.35"/>
+    <linearGradient id="lens" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5EEAD4"/>
+      <stop offset="100%" stop-color="#22D3EE"/>
+    </linearGradient>
+    <filter id="softC" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#0A1852" flood-opacity="0.4"/>
+    </filter>
+    <filter id="softLens" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#062B33" flood-opacity="0.45"/>
     </filter>
   </defs>
 
-  <!-- app-icon squircle background -->
   <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
 
-  <!-- C doubling as a magnifying-glass rim, handle extends from the opening -->
-  <g filter="url(#soft)" stroke-linecap="round" transform="translate(33.5,9.5)">
-    <path d="M 558.3 615.4 A 195 195 0 1 1 640.5 389.7"
-          fill="none" stroke="url(#glass)" stroke-width="72"/>
-    <line x1="553" y1="606" x2="700" y2="753"
-          stroke="url(#glass)" stroke-width="66"/>
+  <!-- geometric C -->
+  <path filter="url(#softC)"
+        d="M 754 353 A 300 300 0 1 0 754 671"
+        fill="none" stroke="url(#cGrad)" stroke-width="100" stroke-linecap="round"/>
+
+  <!-- magnifying glass nested inside the C, handle exiting through the opening -->
+  <g filter="url(#softLens)">
+    <circle cx="466" cy="486" r="96" fill="none" stroke="url(#lens)" stroke-width="34"/>
+    <line x1="536" y1="556" x2="700" y2="700" stroke="url(#lens)" stroke-width="34" stroke-linecap="round"/>
   </g>
 </svg>
