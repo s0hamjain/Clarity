@@ -7,9 +7,9 @@ package render
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strings"
 )
 
@@ -26,8 +26,8 @@ func (e *RenderError) Error() string {
 }
 
 // stdlibModules is a working allowlist of Python standard library top-level
-// module names. Generated Manim code should never need anything outside
-// manim + stdlib; this list is intentionally generous rather than exhaustive.
+// module names. This list is intentionally generous rather than exhaustive;
+// anything not on it (ctypes, socket, subprocess, requests, ...) is rejected.
 var stdlibModules = map[string]bool{
 	"abc": true, "argparse": true, "array": true, "ast": true, "asyncio": true,
 	"base64": true, "bisect": true, "builtins": true, "calendar": true,
@@ -45,88 +45,131 @@ var stdlibModules = map[string]bool{
 	"uuid": true, "warnings": true, "weakref": true, "zoneinfo": true,
 }
 
-var (
-	// Matches one `import x[, y]` or `from x import ...` per line. Uses
-	// [ \t] rather than \s so the capture never crosses a newline.
-	importRe = regexp.MustCompile(`(?m)^[ \t]*(?:from[ \t]+([A-Za-z_][\w.]*)[ \t]+import\b|import[ \t]+([A-Za-z_][\w.,\t ]*))`)
+// extraAllowedModules are non-stdlib packages guaranteed present in the
+// manim-worker image that generated scenes routinely need. numpy ships as a
+// manim dependency (see docker/manim-worker) and nearly every LLM-written
+// Manim scene imports it directly for its own math; banning it just burns
+// the agent's repair budget on a safe, ubiquitous import. This amends the
+// FRD §14.2 "manim/stdlib only" wording to "manim, numpy, or stdlib" — flag
+// this to the team since it's a spec-touching change.
+var extraAllowedModules = map[string]bool{
+	"numpy": true,
+}
 
-	// Requires the exact class the pre-check and the container both need.
-	classRe = regexp.MustCompile(`class\s+GeneratedScene\s*\(\s*Scene\s*\)`)
+// astScript parses the source exactly once and reports everything Precheck
+// needs from the real AST rather than regexes over the text: enumerated
+// imports, calls matching the banned list, and whether the required class
+// is present. A regex anchored per-line missed statements chained after a
+// semicolon (e.g. `from manim import *; import ctypes`); walking the AST
+// doesn't care how the source is laid out.
+const astScript = `
+import ast, sys, json
 
-	bannedCallRes = []struct {
-		re     *regexp.Regexp
-		reason string
-	}{
-		{regexp.MustCompile(`\bos\.system\s*\(`), "calls os.system"},
-		{regexp.MustCompile(`\bsubprocess\b`), "references subprocess"},
-		{regexp.MustCompile(`\b__import__\s*\(`), "calls __import__"},
-		{regexp.MustCompile(`\beval\s*\(`), "calls eval"},
-		{regexp.MustCompile(`\bexec\s*\(`), "calls exec"},
-		{regexp.MustCompile(`\bopen\s*\([^)]*["'](?:w|a|x|w\+|a\+|x\+)["']`), "opens a file for writing"},
-	}
-)
+def qualname(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+BANNED_NAMES = {"eval", "exec", "__import__"}
+BANNED_QUALNAMES = {
+    "os.system", "os.popen", "os.execl", "os.execv", "os.execve",
+    "shutil.rmtree",
+}
+
+try:
+    tree = ast.parse(sys.stdin.read())
+except SyntaxError as e:
+    print(json.dumps({"syntax_error": str(e)}))
+    sys.exit(0)
+
+imports = []
+banned = []
+has_class = False
+
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            imports.append(alias.name)
+    elif isinstance(node, ast.ImportFrom):
+        if node.module:
+            imports.append(node.module)
+    elif isinstance(node, ast.ClassDef) and node.name == "GeneratedScene":
+        for base in node.bases:
+            if isinstance(base, ast.Name) and base.id == "Scene":
+                has_class = True
+    elif isinstance(node, ast.Call):
+        name = qualname(node.func)
+        if name in BANNED_NAMES:
+            banned.append(name + "()")
+        elif name in BANNED_QUALNAMES:
+            banned.append(name + "()")
+        elif name == "subprocess" or (name and name.startswith("subprocess.")):
+            banned.append("subprocess")
+        elif name == "open":
+            mode = None
+            if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                mode = node.args[1].value
+            for kw in node.keywords:
+                if kw.arg == "mode" and isinstance(kw.value, ast.Constant):
+                    mode = kw.value.value
+            if isinstance(mode, str) and any(c in mode for c in "wax"):
+                banned.append("open(...) for writing")
+
+print(json.dumps({"imports": imports, "banned": banned, "has_class": has_class}))
+`
+
+type astResult struct {
+	SyntaxError string   `json:"syntax_error"`
+	Imports     []string `json:"imports"`
+	Banned      []string `json:"banned"`
+	HasClass    bool     `json:"has_class"`
+}
 
 // Precheck runs the static safety scan every generated source file must pass
-// before a docker run: valid Python, only manim/stdlib imports, none of the
-// banned calls, and a GeneratedScene(Scene) class. Returns nil when clean.
+// before a docker run: valid Python, only manim/numpy/stdlib imports, none
+// of the banned calls, and a GeneratedScene(Scene) class. Returns nil when
+// the source is clean.
 func Precheck(src string) *RenderError {
-	if err := checkSyntax(src); err != nil {
-		return err
-	}
-	if err := checkImports(src); err != nil {
-		return err
-	}
-	if err := checkBannedCalls(src); err != nil {
-		return err
-	}
-	if !classRe.MatchString(src) {
-		return &RenderError{Stage: "precheck", Traceback: "missing required `class GeneratedScene(Scene)`"}
-	}
-	return nil
-}
-
-func checkSyntax(src string) *RenderError {
-	cmd := exec.Command("python3", "-c", "import ast,sys; ast.parse(sys.stdin.read())")
+	cmd := exec.Command("python3", "-c", astScript)
 	cmd.Stdin = strings.NewReader(src)
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
-		return &RenderError{Stage: "precheck", Traceback: "invalid Python syntax: " + lines[len(lines)-1]}
+		return &RenderError{Stage: "precheck", Traceback: "failed to analyze source: " + strings.TrimSpace(stderr.String())}
 	}
-	return nil
-}
 
-func checkImports(src string) *RenderError {
-	for _, m := range importRe.FindAllStringSubmatch(src, -1) {
-		modules := m[1]
-		if modules == "" {
-			modules = m[2]
-		}
-		for _, mod := range strings.Split(modules, ",") {
-			mod = strings.TrimSpace(mod)
-			if mod == "" {
-				continue
-			}
-			// "numpy as np" -> "numpy"; "a.b.c" -> root "a".
-			fields := strings.Fields(mod)
-			root := strings.SplitN(fields[0], ".", 2)[0]
-			if root != "manim" && !stdlibModules[root] {
-				return &RenderError{
-					Stage:     "precheck",
-					Traceback: fmt.Sprintf("disallowed import: %q (only manim and the standard library are allowed)", root),
-				}
+	var res astResult
+	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
+		return &RenderError{Stage: "precheck", Traceback: "failed to parse analysis output: " + err.Error()}
+	}
+
+	if res.SyntaxError != "" {
+		return &RenderError{Stage: "precheck", Traceback: "invalid Python syntax: " + res.SyntaxError}
+	}
+
+	for _, mod := range res.Imports {
+		root := strings.SplitN(mod, ".", 2)[0]
+		if root != "manim" && !extraAllowedModules[root] && !stdlibModules[root] {
+			return &RenderError{
+				Stage:     "precheck",
+				Traceback: fmt.Sprintf("disallowed import: %q (only manim, numpy, and the standard library are allowed)", root),
 			}
 		}
 	}
-	return nil
-}
 
-func checkBannedCalls(src string) *RenderError {
-	for _, b := range bannedCallRes {
-		if b.re.MatchString(src) {
-			return &RenderError{Stage: "precheck", Traceback: "banned pattern: " + b.reason}
-		}
+	if len(res.Banned) > 0 {
+		return &RenderError{Stage: "precheck", Traceback: "banned pattern: " + res.Banned[0]}
 	}
+
+	if !res.HasClass {
+		return &RenderError{Stage: "precheck", Traceback: "missing required `class GeneratedScene(Scene)`"}
+	}
+
 	return nil
 }

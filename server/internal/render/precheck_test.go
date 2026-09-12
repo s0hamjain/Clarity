@@ -9,11 +9,12 @@ category: general
 tags: Circle
 """
 from manim import *
+import numpy as np
 
 
 class GeneratedScene(Scene):
     def construct(self):
-        c = Circle()
+        c = Circle().move_to(np.array([0, 0, 0]))
         self.play(Create(c))
 `
 
@@ -24,7 +25,7 @@ func TestPrecheck(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "good sample",
+			name:    "good sample with numpy",
 			src:     goodSample,
 			wantErr: false,
 		},
@@ -40,9 +41,27 @@ func TestPrecheck(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "disallowed import chained after a semicolon",
+			src: "from manim import *; import ctypes\n" +
+				"class GeneratedScene(Scene):\n    def construct(self):\n        pass\n",
+			wantErr: true,
+		},
+		{
 			name: "os.system call",
 			src: "from manim import *\nimport os\n" +
 				"class GeneratedScene(Scene):\n    def construct(self):\n        os.system('ls')\n",
+			wantErr: true,
+		},
+		{
+			name: "os.popen call",
+			src: "from manim import *\nimport os\n" +
+				"class GeneratedScene(Scene):\n    def construct(self):\n        os.popen('ls')\n",
+			wantErr: true,
+		},
+		{
+			name: "shutil.rmtree call",
+			src: "from manim import *\nimport shutil\n" +
+				"class GeneratedScene(Scene):\n    def construct(self):\n        shutil.rmtree('/work')\n",
 			wantErr: true,
 		},
 		{
@@ -64,21 +83,27 @@ func TestPrecheck(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "missing GeneratedScene class",
-			src: "from manim import *\n" +
-				"class SomeOtherScene(Scene):\n    def construct(self):\n        pass\n",
-			wantErr: true,
-		},
-		{
 			name: "__import__ call",
 			src: "from manim import *\n" +
 				"class GeneratedScene(Scene):\n    def construct(self):\n        __import__('os')\n",
 			wantErr: true,
 		},
 		{
-			name: "open for writing",
+			name: "open for writing, text mode",
 			src: "from manim import *\n" +
 				"class GeneratedScene(Scene):\n    def construct(self):\n        open('x.txt', 'w')\n",
+			wantErr: true,
+		},
+		{
+			name: "open for writing, binary mode",
+			src: "from manim import *\n" +
+				"class GeneratedScene(Scene):\n    def construct(self):\n        open('x.bin', 'wb')\n",
+			wantErr: true,
+		},
+		{
+			name: "missing GeneratedScene class",
+			src: "from manim import *\n" +
+				"class SomeOtherScene(Scene):\n    def construct(self):\n        pass\n",
 			wantErr: true,
 		},
 	}

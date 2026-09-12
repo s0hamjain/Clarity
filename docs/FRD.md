@@ -369,7 +369,7 @@ retrieve ──► generate ──► lint ──► ok? ──► render ──
 |---|---|---|
 | `retrieve` | `MongoDBAtlasVectorSearch.as_retriever(k=3, pre_filter={verified: true, category ∈ {cat, "general"}})` | Query = `narration + " " + visual` (+ `" " + hint` on repair). Stores `snippets` in state. Empty result is fine. |
 | `generate` | **Claude Sonnet 5** → `ManimSource` | `codegen.md` on first attempt; `repair.md` (with `previous_source` + last 40 traceback lines) when `traceback` is set. Snippets pasted verbatim under "Reference — imitate these." Asserts `class GeneratedScene(Scene)` is present — otherwise it's a lint failure. |
-| `lint` | Python, no model | `ast.parse`; imports only `manim`/stdlib; no `os.system`, `subprocess`, `eval`, `exec`, `__import__`, `open(` for writing; literal coordinates (`np.array([`, `.move_to([`) flagged. Failure → back to `generate` with the lint message as `traceback`, up to 2 times per render attempt. |
+| `lint` | Python, no model | `ast.parse`; imports only `manim`/`numpy`/stdlib; no `os.system`, `os.popen`, `subprocess`, `eval`, `exec`, `__import__`, `open(` for writing, `shutil.rmtree`; literal coordinates (`np.array([`, `.move_to([`) flagged. Failure → back to `generate` with the lint message as `traceback`, up to 2 times per render attempt. |
 | `render` | Tool: `POST <COORDINATOR_URL>/internal/render` (§14.1) | Coordinator runs the source in `manim-worker` (its own pre-check runs again — defense in depth), returns `clip_path` or `{stage, traceback}`. Increments `attempts`. |
 | `ingest` | Atlas upsert | On success: `{title: storyboard title + " — scene " + i, description: visual, category, tags: [], source, origin: "generated", verified: false}` via the same code path as `/snippets/ingest`. Failure is logged, never fatal. |
 
@@ -518,7 +518,9 @@ func Concat(ctx context.Context, clipPaths []string, outKey string) (videoURL st
 A scene whose agent call returns `ok: false` is **dropped, not the job**. Zero surviving scenes → `done` with `video_url: null`.
 
 ### 14.2 Static pre-check (before every `docker run`)
-Runs inside `/internal/render` on every call — the agent's `lint` node already ran a similar check, but this one is the security gate and it runs regardless. Parses as Python (`python -c "import ast,sys; ast.parse(sys.stdin.read())"`); rejects any import not `manim`/stdlib; rejects `os.system`, `subprocess`, `open(` for writing, `__import__`, `eval`, `exec`; requires `class GeneratedScene(Scene)`. Cheap, and turns most failures into a fast traceback instead of a slow container.
+Runs inside `/internal/render` on every call — the agent's `lint` node already ran a similar check, but this one is the security gate and it runs regardless. Parses the full AST (`ast.parse` over stdin, walked for `Import`/`ImportFrom`/`Call` nodes — not a per-line regex, so a banned import chained after a `;` or split across a call chain doesn't slip through); rejects any import not `manim`/`numpy`/stdlib; rejects `os.system`, `os.popen`, `subprocess`, `open(` for writing (any mode containing `w`, `a`, or `x`), `__import__`, `eval`, `exec`, `shutil.rmtree`; requires `class GeneratedScene(Scene)`. Cheap, and turns most failures into a fast traceback instead of a slow container.
+
+`numpy` is allowed alongside `manim` and stdlib (amended from "manim/stdlib only") because it ships as a manim dependency and nearly every LLM-written Manim scene imports it directly — banning it wasted the agent's repair budget on a safe, ubiquitous import for no security benefit. The `lint` node's separate literal-coordinate heuristic (`np.array([`, `.move_to([`) still flags hardcoded positions regardless of the import being allowed.
 
 ### 14.3 Docker isolation
 ```sh
