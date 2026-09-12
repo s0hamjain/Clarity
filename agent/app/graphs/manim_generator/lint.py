@@ -26,6 +26,7 @@ BANNED_FUNCTIONS: Set[str] = {
     "getattr",
     "setattr",
     "delattr",
+    "ShowCreation",  # Deprecated in Manim CE, use Create() instead
 }
 
 BANNED_CALL_PATTERNS = {
