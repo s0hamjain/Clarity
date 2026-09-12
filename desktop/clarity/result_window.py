@@ -47,6 +47,8 @@ class ResultBox:
     reached a terminal status — the app answers with `DELETE /api/jobs/{id}`.
     `on_explanation(job_id)` fires once, the first time the page renders an
     explanation, so the app can post the notification from FRD §15.1.
+    `on_update_recent(recent_id, fields)` fires on every poll that learned
+    something, and the app writes it to the local recent (rule 21).
     """
 
     def __init__(
@@ -58,14 +60,18 @@ class ResultBox:
         on_explanation: Callable[[str], None] | None = None,
         on_close: Callable[[str], None] | None = None,
         on_retry: Callable[[str], None] | None = None,
+        on_update_recent: Callable[[str, dict[str, Any]], None] | None = None,
         local: dict[str, Any] | None = None,
+        recent_id: str | None = None,
     ) -> None:
         self.job_id = job_id
         self.box = box
+        self.recent_id = recent_id
         self._on_cancel = on_cancel
         self._on_explanation = on_explanation
         self._on_close = on_close
         self._on_retry = on_retry
+        self._on_update_recent = on_update_recent
         self._closed = threading.Event()
 
         self._proc = WindowProcess(
@@ -74,8 +80,8 @@ class ResultBox:
                 "box": box.as_dict(),
                 "job_id": job_id,
                 "server_url": server_url,
-                # Sprint 3 reopens a recent by handing its saved fields over
-                # here, so the box can paint before the first poll answers.
+                # A reopened recent hands its saved fields over here, so the box
+                # paints before the first poll answers (FRD §15.1).
                 "local": local or None,
             },
             self._handle,
@@ -101,6 +107,13 @@ class ResultBox:
         elif kind == "retry":
             if self._on_retry is not None:
                 self._on_retry(self.job_id)
+        elif kind == "recent":
+            # Only the app process writes recents.json, so the page's updates
+            # come back here rather than being written in the window (rule 21).
+            if self._on_update_recent is not None and self.recent_id:
+                fields = event.get("fields")
+                if isinstance(fields, dict):
+                    self._on_update_recent(self.recent_id, fields)
         elif kind == "exited":
             if not self._closed.is_set():
                 self._closed.set()
@@ -165,9 +178,14 @@ class _JsApi:
         window_host.emit("retry", job_id=job_id or self.job_id)
 
     def update_recent(self, fields: dict[str, Any]) -> None:
-        """Sprint 3: every poll that adds data updates the local recent
-        (FRD §23 rule 21). Logged until `recents.py` exists."""
-        log.debug("update_recent(%s) — not until Sprint 3", sorted((fields or {}).keys()))
+        """Every poll that adds data updates the local recent (rule 21).
+
+        The app does the writing — see `ResultBox._handle`. This fires once a
+        second while a job runs, so the app drops anything that didn't change
+        rather than rewriting the file on every tick.
+        """
+        if isinstance(fields, dict) and fields:
+            window_host.emit("recent", job_id=self.job_id, fields=fields)
 
     def log(self, message: str) -> None:
         """So the page can report trouble into the app's terminal."""

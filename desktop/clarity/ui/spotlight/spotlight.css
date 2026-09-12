@@ -1,5 +1,15 @@
 /* The spotlight box. FRD §15.1: 680×96, thumbnail left, one field right,
- * animates in over 180 ms ease-out. */
+ * animates in over 180 ms ease-out, and grows downward into the recents list.
+ *
+ * The three numbers the list is built from — the field's height, one row, and
+ * the list's padding — are also in spotlight.js, which asks the host for a
+ * window tall enough to hold them. Change one, change both. */
+
+:root {
+  --field-height: 88px; /* the 96 px window, less the 4 px shadow gutter twice */
+  --item-height: 52px;
+  --list-padding: 6px;
+}
 
 body {
   padding: 4px; /* room for the panel's shadow inside the transparent window */
@@ -8,6 +18,8 @@ body {
 /* Animate in: opacity 0→1, scale 0.96→1. The class goes on after first paint
  * so the transition actually runs (FRD §15.1). */
 #panel {
+  display: flex;
+  flex-direction: column;
   opacity: 0;
   transform: scale(0.96);
   transition: opacity 180ms ease-out, transform 180ms ease-out;
@@ -30,7 +42,8 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 100%;
+  flex: none;
+  height: var(--field-height);
   padding: 0 14px;
 }
 
@@ -76,6 +89,8 @@ body {
 }
 
 .hint {
+  display: flex;
+  gap: 4px;
   flex: none;
   color: var(--text-faint);
 }
@@ -92,4 +107,87 @@ body {
  * it only becomes visible when the server is slow or unreachable. */
 body.sending .hint {
   opacity: 0.4;
+}
+
+/* ---------------------------------------------------------------- recents */
+
+/* The list the box grows into (FRD §15.1). The window is sized to fit, so
+ * only the rows scroll, and only past the eighth one. */
+.list-wrap {
+  flex: 1;
+  min-height: 0;
+  padding: var(--list-padding) 6px;
+  border-top: 0.5px solid var(--stroke);
+}
+
+.list {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--item-height);
+  padding: 0 8px;
+  border-radius: 8px;
+  cursor: default;
+}
+
+.item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.item.selected {
+  background: rgba(122, 162, 255, 0.18);
+}
+
+.item.missing {
+  opacity: 0.55;
+}
+
+.item-thumb {
+  width: 48px;
+  height: 36px;
+  flex: none;
+  border-radius: 4px;
+  border: 0.5px solid var(--stroke);
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.item-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.item-label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.item-meta {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* A video exists for this capture, so Enter opens it rather than re-asking. */
+.item-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.list-empty {
+  margin: 0;
+  padding: 9px 10px;
+  font-size: 12px;
+  color: var(--text-faint);
 }

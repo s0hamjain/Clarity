@@ -1,22 +1,21 @@
 """The menu-bar app.
 
 FRD §5 (Menu bar icon row), §15.1. Menu: Capture · Recents · Guardrails ☐ ·
-Server… · Clear Recents · Quit. Sprint 2 wires the spotlight and result boxes
-in through `session.Session`; Recents / Clear Recents stay placeholders until
-Sprint 3's recents store lands.
+Server… · Clear Recents · Quit. Every action that touches a window or the
+network runs through `session.Session`, so `python -m clarity --once` drives
+exactly the same code as the menu.
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
 import threading
 from pathlib import Path
 
 import rumps
 
 from . import __version__
-from .config import RECENTS_DIR, Config
+from .config import Config
 from .hotkey import Hotkey
 from .session import Session
 
@@ -124,8 +123,21 @@ class ClarityApp(rumps.App):
             self._capturing.release()
 
     def on_recents(self, _sender: rumps.MenuItem) -> None:
-        # Sprint 3: open the spotlight box with the recents list expanded.
-        rumps.notification("Clarity", "Recents", "Coming in a later sprint.")
+        """The spotlight box with no capture and the list already out (FRD §16.5)."""
+        threading.Thread(target=self.show_recents, name="clarity-recents", daemon=True).start()
+
+    def show_recents(self) -> None:
+        try:
+            if not self.session.recents.list():
+                self._notify("Clarity", "No recent captures yet", "Press ⌘⇧E to capture a problem.")
+                return
+            self._set_working(True)
+            self.session.open_spotlight(None, expanded=True)
+        except Exception:  # noqa: BLE001 — FRD §23 rule 19
+            log.exception("could not open recents")
+            self._notify("Clarity", "Couldn't open recents", "")
+        finally:
+            self._set_working(self.session.busy)
 
     def on_toggle_guardrails(self, sender: rumps.MenuItem) -> None:
         sender.state = not sender.state
@@ -149,14 +161,13 @@ class ClarityApp(rumps.App):
         threading.Thread(target=self._check_server, args=(True,), name="clarity-healthz", daemon=True).start()
 
     def on_clear_recents(self, _sender: rumps.MenuItem) -> None:
-        # Sprint 3 replaces this with recents.clear(); for now wipe the directory
-        # so the menu item does what it says from day one.
+        """Every screenshot Clarity kept, gone (F45, FRD §20)."""
         try:
-            if RECENTS_DIR.exists():
-                shutil.rmtree(RECENTS_DIR)
-            rumps.notification("Clarity", "Recents cleared", "")
-        except OSError:
+            self.session.clear_recents()
+            self._notify("Clarity", "Recents cleared", "")
+        except Exception:  # noqa: BLE001
             log.exception("could not clear recents")
+            self._notify("Clarity", "Couldn't clear recents", "")
 
     def on_quit(self, _sender: rumps.MenuItem) -> None:
         self.hotkey.stop()

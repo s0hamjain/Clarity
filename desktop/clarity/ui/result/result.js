@@ -118,15 +118,7 @@
     renderExplanation(job.explanation);
     showVideo(job.video_url);
 
-    /* Rule 21 (Sprint 3): every poll that adds data updates the local recent. */
-    api("update_recent", {
-      job_id: job.job_id,
-      problem_text: job.problem_text,
-      problem_hash: job.problem_hash,
-      explanation: job.explanation,
-      video_url: job.video_url,
-      status: job.status
-    });
+    updateRecent(job);
 
     if (job.status === "done") {
       state.finished = true;
@@ -158,6 +150,24 @@
     }
 
     setStatus(statusText(job), "working");
+  }
+
+  /* Rule 21: every poll that adds data updates the local recent, so the box can
+   * be reopened from disk once the job record has expired. A poll happens every
+   * second and mostly learns nothing, so only changes cross the bridge. */
+  var RECENT_FIELDS = ["job_id", "problem_hash", "problem_text", "explanation", "video_url"];
+  var sentToRecent = {};
+
+  function updateRecent(job) {
+    var changes = null;
+    RECENT_FIELDS.forEach(function (field) {
+      var value = job[field];
+      if (!value || sentToRecent[field] === value) return;
+      sentToRecent[field] = value;
+      changes = changes || {};
+      changes[field] = value;
+    });
+    if (changes) api("update_recent", changes);
   }
 
   function failureMessage(code) {
@@ -292,13 +302,19 @@
     queued = [];
   });
 
-  /* Sprint 3: a recent reopened from disk paints before any poll answers. */
+  /* A recent reopened from disk paints before any poll answers, and its own
+   * fields are already on disk — so they don't need writing back. The single
+   * poll that follows is only there to pick up anything new; a 404 means the
+   * job record expired, which for a reopened recent is expected (FRD §19). */
   window.clarityLocal = function (local) {
     if (!local) return;
     state.fromLocal = true;
+    RECENT_FIELDS.forEach(function (field) {
+      if (local[field]) sentToRecent[field] = local[field];
+    });
     renderExplanation(local.explanation);
     showVideo(local.video_url);
-    if (local.explanation) setStatus("Done", "done");
+    if (local.explanation || local.video_url) setStatus("Done", "done");
   };
 
   /* ----------------------------------------------------------------- start */

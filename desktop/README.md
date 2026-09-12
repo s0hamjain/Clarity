@@ -30,6 +30,20 @@ If ⌘⇧E does nothing or the crosshair never appears: **System Settings → Pr
 - The result box shows the explanation first, then the video. Drag it anywhere by its background. **X** or **Esc** closes it.
 - Menu bar icon: **Capture**, **Recents**, **Guardrails** (teach the method, withhold the final answer), **Server…** (change the coordinator URL), **Clear Recents**, **Quit**.
 
+### Asking again about an old screenshot
+
+Your last 50 captures stay on your Mac, so you can come back to one without
+re-taking it. Open the list three ways: **↓** (or **/**) in an empty box, the
+**Recents** menu item, or **⌘⇧E** followed by **Esc** at the crosshair.
+
+| In the list | What happens |
+|---|---|
+| Type | Filters by the problem text |
+| **↑ ↓** | Move between rows; ↑ past the top goes back to the text field |
+| **Enter** on a row with a blue dot | Reopens that explanation and video — no server needed |
+| **Enter** on any other row, or **Tab** on any row | Loads that screenshot into the box so you can ask something new about it |
+| **Esc** | Closes the list; **Esc** again closes the box |
+
 The backend has to be running — see [docs/SETUP.md](../docs/SETUP.md). Clarity keeps no API keys; it only talks to the coordinator URL you set.
 
 ## Privacy
@@ -51,6 +65,9 @@ python -m clarity --once       # one capture through the whole flow: spotlight b
                                #   submit, result box. Waits until you close it.
 python -m clarity --once --no-ask          # just the capture; prints its size and exits
 python -m clarity --once --save ~/Desktop/cap.png
+python -m clarity --recents    # the spotlight box on the recents list, no capture.
+                               #   Prints the stored entries first. Needs no server —
+                               #   this is the path to test with the coordinator stopped.
 ```
 
 `CLARITY_DEBUG=1` turns on debug logging inside the window processes, and lets
@@ -114,6 +131,7 @@ Cocoa owns the main thread. Close the window itself.
 | `clarity/config.py` | `~/Library/Application Support/Clarity/config.json` |
 | `clarity/hotkey.py` | `pynput` global hotkey, 2 s debounce, worker thread |
 | `clarity/capture.py` | `screencapture -i -x` → Pillow ≤ 1568 px → PNG data URL |
+| `clarity/recents.py` | The last 50 captures: `recents.json` + two PNGs each |
 | `clarity/client.py` | The coordinator: create, poll, cancel, health |
 | `clarity/session.py` | The flow: capture → spotlight → job → result box |
 | `clarity/window_host.py` | One process per window, and the protocol to it |
@@ -149,5 +167,15 @@ before touching that file:
   string, so the host can't talk to the page without it. Everything else stays
   `'self'`, which is what keeps rule 20 true — no script, style or image in
   `ui/` comes from the network.
+- **Only the app process writes `recents.json`.** Window processes read it —
+  the spotlight box needs the rows, and inlines the thumbnails because a page
+  loaded from `ui/` can't fetch a `file://` image. Anything a window wants
+  *written* goes back over the protocol as an event and the app does it, since
+  two processes rewriting one JSON file would lose entries.
+- **Growing the spotlight box happens in the window.** The page asks
+  `js_api.resize(height)` for the room it wants; the host clamps that to what
+  is left below the box on that display and returns what it applied, which is
+  what the list sizes its scroll area from. On a short display the list shows
+  fewer than eight rows and scrolls, rather than running off the screen.
 
 Sprint plan and the API this app consumes: [docs/P4_DESKTOP.md](../docs/P4_DESKTOP.md), [docs/API.md §2](../docs/API.md#2-coordinator-api).
