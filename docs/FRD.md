@@ -135,7 +135,8 @@ Coordinator (Go)
 Agent service (Python, FastAPI)           ├──► Docker          one manim-worker container per scene
   /vision  /explain  /snippets  /codegen  ├──► ffmpeg          concat, stream copy
         │                                 └──► S3 / MinIO      finished MP4s, served directly
-        ├──► Claude API (Anthropic)
+        ├──► Google Gemini API (vision / OCR)
+        ├──► Claude API (explanation: Opus 5 · code: Sonnet 5)
         ├──► Voyage AI (embeddings)
         └──► MongoDB Atlas Vector Search   manim_snippets corpus (RAG)
 ```
@@ -156,7 +157,9 @@ Two decisions shape everything downstream:
 | Installer | PyInstaller → `.app` · `create-dmg` → `.dmg` · `pkgbuild` → `.pkg` (optional) | Distributable build |
 | Coordinator | Go 1.22+ · `net/http` · `mongo-driver/v2` · AWS SDK v2 | Public API, job orchestration, cache, render dispatch |
 | Agent service | Python 3.12 · FastAPI · `anthropic` · `voyageai` · `pymongo` | All model calls, embeddings, retrieval, corpus ingest |
-| LLM | Claude Opus 5 (`claude-opus-5`) | Transcription, explanation + storyboard, codegen, repair |
+| OCR / vision | Google Gemini 3.8 Flash (`gemini-3.8-flash`) via `google-genai` | Reads the problem off the screenshot, verbatim. `temperature=0` for deterministic transcription. |
+| Explanation | Claude Opus 5 (`claude-opus-5`) | Written explanation + storyboard |
+| Code generation | Claude Sonnet 5 (`claude-sonnet-5`) | Manim source and repair |
 | Embeddings | Voyage AI `voyage-code-3` (1024 dims) | Embeds snippet corpus and scene queries |
 | Database | MongoDB Atlas (M0 free tier) | `jobs`, `cache`, `manim_snippets` collections; Atlas Vector Search index |
 | Render isolation | Docker · `manim-worker` image (Python + Manim CE + LaTeX + ffmpeg) | One container per scene, `--network none` |
@@ -283,7 +286,7 @@ Nothing problem-like on screen → `category: "unknown"`, `problem_text: ""`; th
 
 The coordinator strips the `data:image/png;base64,` prefix before calling this endpoint. The agent receives raw base64 only.
 
-**Determinism (decided):** the cache needs two captures of the same problem to transcribe identically. `temperature` is not available on Claude Opus 5 (sampling parameters return 400). This call therefore runs on Opus 5 with structured outputs and `output_config={"effort": "low"}`, and relies on the schema plus `normalize()` (§12). If the collision experiment in Sprint 1 shows that isn't enough, the fallback is `claude-haiku-4-5` with `temperature=0` for this endpoint only.
+**Model:** Google **Gemini 3.8 Flash** (`gemini-3.8-flash`) through the `google-genai` SDK, with `temperature=0`, thinking level `low`, and a JSON response schema (`response_mime_type="application/json"`, `response_schema=VisionResponse`). The cache needs two captures of the same problem to transcribe identically; `temperature=0` plus a schema plus `normalize()` (§12) is the whole determinism strategy. The Sprint 1 collision experiment measures how well it works. Cheaper fallback if latency matters more than accuracy: `gemini-3.5-flash-lite`.
 
 ### 10.2 `POST /explain`
 
@@ -377,7 +380,14 @@ Generated snippets land with `verified: false` and are **excluded from retrieval
 
 ### 10.7 Models
 
-`claude-opus-5` for every call. Adaptive thinking is on by default. `output_config={"effort": "low"}` on `/vision`; default effort elsewhere. Structured outputs for every response. No assistant prefill (returns 400 on Opus 5). Use `client.messages.stream(...)` for `/codegen` — output can be long.
+| Endpoint | Model | Settings |
+|---|---|---|
+| `/vision` | **Gemini 3.8 Flash** `gemini-3.8-flash` | `temperature=0`, thinking `low`, JSON schema response. Image as an inline `Part` (`mime_type="image/png"`). |
+| `/explain` | **Claude Opus 5** `claude-opus-5` | Adaptive thinking (default). Structured outputs. |
+| `/codegen` (generate and repair) | **Claude Sonnet 5** `claude-sonnet-5` | Adaptive thinking. Structured outputs. `client.messages.stream()` — output is long. |
+| Embeddings | Voyage `voyage-code-3` | See §13. |
+
+Claude rules: structured outputs for every response; no assistant prefill (400 on Opus 5 / Sonnet 5); never pass `temperature` (400 on both). Gemini rules: always `temperature=0` and a `response_schema`; parse the JSON, never regex it.
 
 ---
 
@@ -697,7 +707,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 
 # 20. Security and Credential Handling
 
-- `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, S3 credentials live in `agent/.env` and `server/.env`. Never committed. Never in the desktop app.
+- `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, S3 credentials live in `agent/.env` and `server/.env`. Never committed. Never in the desktop app.
 - The desktop app holds no secrets. It talks only to the coordinator.
 - Generated code runs only inside `--network none` containers, after a static pre-check. Never on the host.
 - Server side, screenshots are processed and discarded. The coordinator logs the hash, never the image. Images are not written to Atlas or S3.
@@ -724,11 +734,15 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 ### `agent/.env`
 | Var | Example | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | `sk-ant-…` | Claude |
+| `GEMINI_API_KEY` | `AIza…` | Gemini — `/vision` |
+| `ANTHROPIC_API_KEY` | `sk-ant-…` | Claude — `/explain` (Opus 5), `/codegen` (Sonnet 5) |
 | `VOYAGE_API_KEY` | `pa-…` | Embeddings |
 | `MONGODB_URI` | `mongodb+srv://…/clarity` | Atlas |
 | `MONGODB_DB` | `clarity` | Database name |
 | `EMBED_MODEL` | `voyage-code-3` | Must match the vector index dims |
+| `VISION_MODEL` | `gemini-3.8-flash` | |
+| `EXPLAIN_MODEL` | `claude-opus-5` | |
+| `CODEGEN_MODEL` | `claude-sonnet-5` | |
 
 ### `server/.env`
 | Var | Default | Purpose |
