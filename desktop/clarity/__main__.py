@@ -1,7 +1,10 @@
 """`python -m clarity` — run the menu-bar app.
 
     python -m clarity              menu bar icon appears; the hotkey is live
-    python -m clarity --once       one region capture, print the result, exit
+    python -m clarity --once       one capture through the whole flow — spotlight
+                                   box, submit, result box — then exit
+    python -m clarity --once --no-ask
+                                   just the capture: print its size and exit
     python -m clarity --once --save out.png
                                    same, and write the downscaled PNG to disk
 """
@@ -17,13 +20,31 @@ from pathlib import Path
 def _parse(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="clarity", description="Clarity menu-bar app")
     p.add_argument("--once", action="store_true", help="run one capture without the hotkey and exit")
+    p.add_argument(
+        "--no-ask",
+        action="store_true",
+        help="with --once: stop after the capture instead of opening the spotlight box",
+    )
     p.add_argument("--save", metavar="PATH", help="with --once: write the downscaled PNG here")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    # Not for people. The app re-runs itself with this to put each window in its
+    # own process, because rumps and pywebview can't share a main thread
+    # (clarity/window_host.py).
+    p.add_argument("--window-host", metavar="KIND", choices=("spotlight", "result"), help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
-def _run_once(save: str | None) -> int:
+def _run_once(save: str | None, ask: bool) -> int:
+    """One capture without the hotkey — the end-to-end test hook.
+
+    With `ask` (the default) it runs the real flow: spotlight box, submit to the
+    coordinator, result box, and it waits until the last window is closed.
+    """
+    import threading
+
     from . import capture
+    from .config import Config
+    from .session import Session
 
     cap = capture.capture_region()
     if cap is None:
@@ -40,11 +61,35 @@ def _run_once(save: str | None) -> int:
         out = Path(save).expanduser()
         out.write_bytes(cap.png_bytes)
         print(f"saved {out}")
+
+    if not ask:
+        return 0
+
+    config = Config()
+    idle = threading.Event()
+    session = Session(config, on_all_closed=idle.set)
+    print(f"coordinator: {config.server_url}")
+    session.open_spotlight(cap)
+
+    # Every window runs in its own process, so this thread only has to wait for
+    # the last one to close.
+    try:
+        idle.wait()
+    except KeyboardInterrupt:
+        session.close_all()
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(sys.argv[1:] if argv is None else argv)
+
+    if args.window_host:
+        # A window process: it sets up its own logging to stderr, because stdout
+        # is the protocol back to the app.
+        from .window_host import run
+
+        return run(args.window_host)
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
@@ -52,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.once:
-        return _run_once(args.save)
+        return _run_once(args.save, ask=not args.no_ask)
 
     from .app import main as app_main
 

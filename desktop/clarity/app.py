@@ -1,9 +1,9 @@
 """The menu-bar app.
 
 FRD §5 (Menu bar icon row), §15.1. Menu: Capture · Recents · Guardrails ☐ ·
-Server… · Clear Recents · Quit. Sprint 1 wires Capture, Guardrails, Server…
-and Quit; Recents / Clear Recents are placeholders until Sprint 3's recents
-store lands, and the spotlight/result windows arrive in Sprint 2.
+Server… · Clear Recents · Quit. Sprint 2 wires the spotlight and result boxes
+in through `session.Session`; Recents / Clear Recents stay placeholders until
+Sprint 3's recents store lands.
 """
 
 from __future__ import annotations
@@ -15,9 +15,10 @@ from pathlib import Path
 
 import rumps
 
-from . import __version__, capture as capture_mod
+from . import __version__
 from .config import RECENTS_DIR, Config
 from .hotkey import Hotkey
+from .session import Session
 
 log = logging.getLogger(__name__)
 
@@ -41,16 +42,21 @@ class ClarityApp(rumps.App):
         )
 
         self._capturing = threading.Lock()
+        self.session = Session(self.config, notify=self._notify, on_all_closed=self._on_idle)
         self._build_menu()
 
         self.hotkey = Hotkey(self.config.hotkey, self.on_hotkey)
         self.hotkey.start()
         if not self.hotkey.active:
-            rumps.notification(
+            self._notify(
                 "Clarity",
                 "Hotkey not registered",
                 "Grant Input Monitoring to your terminal (or Clarity.app) and relaunch.",
             )
+
+        # FRD §15.1: check the coordinator on launch, so the first capture isn't
+        # where the user finds out it's down.
+        threading.Thread(target=self._check_server, name="clarity-healthz", daemon=True).start()
 
     # -- menu ----------------------------------------------------------------
 
@@ -101,29 +107,20 @@ class ClarityApp(rumps.App):
     def on_capture(self, _sender: rumps.MenuItem) -> None:
         threading.Thread(target=self.run_capture, name="clarity-capture", daemon=True).start()
 
-    def run_capture(self) -> capture_mod.Capture | None:
-        """The whole Sprint 1 pipeline: region select → downscale → data URL.
-
-        Sprint 2 hands the Capture to the spotlight box instead of logging it.
-        """
+    def run_capture(self) -> bool:
+        """Region select → downscale → spotlight box (FRD §16.2)."""
         if not self._capturing.acquire(blocking=False):
             log.info("capture already in progress; ignoring")
-            return None
+            return False
         try:
             self._set_working(True)
-            cap = capture_mod.capture_region()
-            if cap is None:
-                log.info("capture cancelled")
-                return None
-            log.info("captured %dx%d, %d bytes as PNG", cap.width, cap.height, cap.size_bytes)
-            # TODO(sprint 2): open the spotlight box with this capture.
-            return cap
+            return self.session.capture_and_ask()
         except Exception:  # noqa: BLE001 — FRD §23 rule 19
             log.exception("capture failed")
-            rumps.notification("Clarity", "Capture failed", "Check Screen Recording permission and try again.")
-            return None
+            self._notify("Clarity", "Capture failed", "Check Screen Recording permission and try again.")
+            return False
         finally:
-            self._set_working(False)
+            self._set_working(self.session.busy)
             self._capturing.release()
 
     def on_recents(self, _sender: rumps.MenuItem) -> None:
@@ -148,6 +145,8 @@ class ClarityApp(rumps.App):
         if resp.clicked:
             self.config.server_url = resp.text
             log.info("server_url = %s", self.config.server_url)
+        # Either way, report what's at that URL now (FRD §15.1, Config row).
+        threading.Thread(target=self._check_server, args=(True,), name="clarity-healthz", daemon=True).start()
 
     def on_clear_recents(self, _sender: rumps.MenuItem) -> None:
         # Sprint 3 replaces this with recents.clear(); for now wipe the directory
@@ -161,7 +160,41 @@ class ClarityApp(rumps.App):
 
     def on_quit(self, _sender: rumps.MenuItem) -> None:
         self.hotkey.stop()
+        self.session.close_all()  # window processes outlive us otherwise
         rumps.quit_application()
+
+    # -- server --------------------------------------------------------------
+
+    def _check_server(self, asked: bool = False) -> None:
+        """`asked` is true when the user chose Server… — then say something
+        either way. On launch, only an unreachable server is worth a
+        notification (see Session.check_server)."""
+        reachable, problem = self.session.check_server()
+        if not reachable:
+            log.warning("%s", problem)
+            self._notify("Clarity", problem or "Can't reach the server", "Set the URL with Server…")
+        elif problem:
+            log.info("%s", problem)
+            if asked:
+                self._notify("Clarity", problem, self.config.server_url)
+        else:
+            log.info("coordinator ok at %s", self.config.server_url)
+            if asked:
+                self._notify("Clarity", "Server is up", self.config.server_url)
+
+    # -- helpers -------------------------------------------------------------
+
+    def _on_idle(self) -> None:
+        self._set_working(False)
+
+    @staticmethod
+    def _notify(title: str, subtitle: str, message: str) -> None:
+        """A notification must never be the thing that crashes the app — it
+        fails when the app isn't bundled, among other reasons (FRD §23 rule 19)."""
+        try:
+            rumps.notification(title, subtitle, message)
+        except Exception:  # noqa: BLE001
+            log.info("notification (not shown): %s — %s %s", title, subtitle, message)
 
 
 def main() -> None:

@@ -87,6 +87,33 @@ def to_data_url(png_bytes: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
 
 
+# The spotlight box draws the thumbnail at 64×48 and the Sprint 3 recents list
+# at 128 px, so 256 px covers both, retina included, in a few KB.
+THUMB_SIDE = 256
+
+
+def thumbnail_png(png_bytes: bytes, max_side: int = THUMB_SIDE) -> bytes:
+    """A small PNG of a capture, for the spotlight box and (Sprint 3) recents."""
+    with Image.open(io.BytesIO(png_bytes)) as im:
+        im.load()
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+
+
+def thumbnail_data_url(png_bytes: bytes, max_side: int = THUMB_SIDE) -> str | None:
+    """`thumbnail_png` as a data URL, or None if the image can't be read — a
+    missing thumbnail must never stop the box from opening."""
+    try:
+        return to_data_url(thumbnail_png(png_bytes, max_side))
+    except Exception:  # noqa: BLE001
+        log.exception("could not build a thumbnail")
+        return None
+
+
 def capture_region(keep_raw: bool = False) -> Capture | None:
     """Interactive region capture.
 
