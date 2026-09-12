@@ -9,6 +9,34 @@ This FRD is the single source of truth for implementation. It contains the produ
 
 ---
 
+# 0. Read This First
+
+This is the spec. It's long because it's exact — every JSON field, every status string, every Docker flag. You are not expected to read it top to bottom. **Open the section your task points to.** Section numbers are stable; other docs cite them as "FRD §10.3".
+
+If a word here is unfamiliar, the [README glossary](../README.md#glossary) defines it. The ones that matter most:
+
+| Term | In one line |
+|---|---|
+| **Job** | One request from screenshot to video, with an ID and a status that advances through fixed steps (§11.2). |
+| **Coordinator** | The Go server the desktop app talks to. Orchestrates; does no AI or rendering itself (§11). |
+| **Agent service** | The Python server that makes every Claude call (§10). |
+| **Storyboard / scene** | The model's plan for the animation: 2–5 scenes, each rendered separately then stitched (§10.2, §14). |
+| **Snippet corpus** | Verified working Manim examples in MongoDB; the 3 most similar are shown to the model before it writes code. This is the RAG part (§13). |
+| **Cache key** | The fingerprint of a problem; same fingerprint means reuse the existing video (§12). |
+| **Spotlight box / result box** | The two floating windows of the desktop app: input, then output (§5, §15). |
+
+How the sections group:
+
+| If you're working on… | Read |
+|---|---|
+| Anything | §1–§6 (what and why), §23 (rules) |
+| The agent service (P1) | §9.3, §10, §13, §22 |
+| The render pipeline (P2) | §13 (corpus you seed), §14 |
+| The coordinator (P3) | §8, §9.1–9.2, §11, §12, §14.1, §19 |
+| The desktop app (P4) | §5, §15, §16, §19 (desktop rows) |
+
+---
+
 # 1. Product Overview
 
 A student is stuck on a hard problem — a derivative in a PDF, a recurrence on a lecture slide, a binary search that returns the wrong index in their IDE. They press a hotkey. They drag a box around the problem. A translucent Spotlight-style box appears where they can type context — *"why is my binary search not working? visualize where it's messing up"* — or pull up a recent screenshot and ask again. Within seconds a result box appears with a written, step-by-step explanation. About a minute later, a custom animated video plays in that same box, walking through the same problem visually — generated fresh for that specific problem by a model writing Manim code, not pulled from a library of pre-made clips.
