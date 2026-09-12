@@ -42,7 +42,11 @@ type Config struct {
 	FakeVideoURL string
 }
 
+// Load reads server/.env (if present) and then the environment. Real
+// environment variables take precedence over the file.
 func Load() (*Config, error) {
+	loadDotEnv(dotEnvPath())
+
 	c := &Config{
 		Port:              env("PORT", "8080"),
 		AgentURL:          env("AGENT_URL", "http://localhost:8000"),
@@ -69,6 +73,20 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MANIM_QUALITY must be -ql or -qm, got %q", c.ManimQuality)
 	}
 	return c, nil
+}
+
+// dotEnvPath finds server/.env whether the process was started from server/
+// (SETUP §9) or from the repository root.
+func dotEnvPath() string {
+	if p := os.Getenv("CLARITY_ENV_FILE"); p != "" {
+		return p
+	}
+	for _, p := range []string{".env", "server/.env"} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ".env"
 }
 
 // UsesAtlas reports whether the coordinator is backed by MongoDB Atlas rather
