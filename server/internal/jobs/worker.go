@@ -25,8 +25,12 @@ type Worker struct {
 	cache CacheStore
 	agent *agent.Client
 
-	// renderScene turns one scene into one clip. Fake in Sprint 2; Sprint 3
-	// makes it one POST /scenes/render call per scene.
+	// concat is P2's render.Concat (FRD §14.1): it stitches the clips and
+	// uploads the result, returning the public URL.
+	concat ConcatFunc
+
+	// renderScene, when set, overrides how a scene becomes a clip. Only tests
+	// set it; a real job gets its SceneFunc from sceneFunc below.
 	renderScene SceneFunc
 
 	mu      sync.Mutex
@@ -44,27 +48,45 @@ type Worker struct {
 // while a status write is already in flight leaves the job `cancelled` and then
 // back at `explaining`, and the desktop app polls a job that rose from the dead.
 type jobCtl struct {
+	ctx    context.Context
 	cancel context.CancelFunc
 	mu     sync.Mutex
 }
 
-func NewWorker(cfg *config.Config, j Store, c CacheStore, a *agent.Client, renderScene SceneFunc) *Worker {
+// ConcatFunc is P2's render.Concat (FRD §14.1). A field rather than a direct
+// call so the fake can stand in until P2's Concat lands.
+type ConcatFunc func(ctx context.Context, clipPaths []string, outKey string) (videoURL string, err error)
+
+func NewWorker(cfg *config.Config, j Store, c CacheStore, a *agent.Client, concat ConcatFunc) *Worker {
 	return &Worker{
 		cfg:          cfg,
 		jobs:         j,
 		cache:        c,
 		agent:        a,
-		renderScene:  renderScene,
+		concat:       concat,
 		running:      make(map[string]*jobCtl),
 		stepInterval: time.Second,
 	}
+}
+
+// sceneFunc decides how this job's scenes become clips. FAKE_AGENT gates it,
+// not FAKE_RENDER: /scenes/render is an agent endpoint, and the rendering it
+// triggers happens back inside /internal/render, which is always real.
+func (w *Worker) sceneFunc(j *Job, storyboardTitle, category string) SceneFunc {
+	if w.renderScene != nil {
+		return w.renderScene // test override
+	}
+	if w.cfg.FakeAgent {
+		return FakeSceneFunc
+	}
+	return AgentSceneFunc(w.agent, w.cfg, j.ID, storyboardTitle, category, j.Guardrails)
 }
 
 // Start runs the pipeline for one job in its own goroutine and returns at once.
 // POST /api/jobs must not block on anything (FRD §23 rule 7).
 func (w *Worker) Start(j *Job, imageB64, mediaType string) {
 	ctx, cancel := context.WithCancel(context.Background())
-	ctl := &jobCtl{cancel: cancel}
+	ctl := &jobCtl{ctx: ctx, cancel: cancel}
 	w.mu.Lock()
 	w.running[j.ID] = ctl
 	w.mu.Unlock()
@@ -105,6 +127,17 @@ func (w *Worker) Cancel(ctx context.Context, id string) error {
 	}
 	// Nothing is written to the cache on this path (FRD §23 rule 10).
 	return w.jobs.Update(ctx, id, Fields{"status": StatusCancelled})
+}
+
+// JobContext returns the context of a running job, so /internal/render can
+// bind a container's lifetime to the job that asked for it. Reports false once
+// the job has finished or was never here.
+func (w *Worker) JobContext(id string) (context.Context, bool) {
+	ctl := w.ctl(id)
+	if ctl == nil {
+		return nil, false
+	}
+	return ctl.ctx, true
 }
 
 func (w *Worker) ctl(id string) *jobCtl {
@@ -222,7 +255,7 @@ func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 	if !w.setStatus(ctx, j.ID, StatusRendering) {
 		return
 	}
-	clips := w.fanOut(ctx, j.ID, scenes, w.renderScene, func(done int) {
+	clips := w.fanOut(ctx, j.ID, scenes, w.sceneFunc(j, explained.Storyboard.Title, vision.Category), func(done int) {
 		w.update(ctx, j.ID, Fields{"scenes_done": done})
 	})
 	if ctx.Err() != nil {
@@ -299,16 +332,11 @@ func (w *Worker) explain(ctx context.Context, req agent.ExplainRequest) (*agent.
 	return w.agent.Explain(ctx, req)
 }
 
-// concatAndUpload stitches the clips and returns the public video URL.
-// Real ffmpeg concat and S3 upload are P2's render.Concat, wired in Sprint 3.
+// concatAndUpload stitches the surviving clips into one video and uploads it,
+// returning the public URL. Both halves are P2's render.Concat; the key is the
+// problem hash, so the same problem always lands at the same object.
 func (w *Worker) concatAndUpload(ctx context.Context, clips []string, hash string) (string, error) {
-	if w.cfg.FakeRender {
-		if !w.sleep(ctx) {
-			return "", ctx.Err()
-		}
-		return w.cfg.FakeVideoURL, nil
-	}
-	return "", errors.New("render.Concat is not wired yet (P2, Sprint 3)")
+	return w.concat(ctx, clips, "renders/"+hash+".mp4")
 }
 
 // --- job record helpers ---------------------------------------------------

@@ -195,3 +195,79 @@ func TestInternalRenderSemaphoreBusy(t *testing.T) {
 		t.Error("429 without Retry-After leaves the agent guessing")
 	}
 }
+
+// Cancelling a job must kill the container it started. /internal/render is an
+// HTTP call from the agent, so the request's own context says nothing about the
+// job — the handler has to find the job from work_dir and render under its
+// context instead.
+func TestInternalRenderDiesWithTheJob(t *testing.T) {
+	srv, _, _, pipe := newTestServerFull(t)
+
+	const jobID = "j_cancel01"
+	jobCtx, cancelJob := context.WithCancel(context.Background())
+	defer cancelJob()
+	pipe.contexts = map[string]context.Context{jobID: jobCtx}
+
+	renderStarted := make(chan struct{})
+	renderCtx := make(chan context.Context, 1)
+	srv.render = func(ctx context.Context, src, workDir, quality string) (string, *render.RenderError) {
+		renderCtx <- ctx
+		close(renderStarted)
+		<-ctx.Done() // a real container dies here, via docker kill
+		return "", &render.RenderError{Stage: "timeout", Traceback: "killed"}
+	}
+
+	dir := filepath.Join(jobs.WorkRoot(jobID), "scene0")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(jobs.WorkRoot(jobID))
+
+	body, _ := json.Marshal(internalRenderRequest{Source: goodScene, WorkDir: dir})
+	h := srv.Routes()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- doLocal(t, h, string(body)) }()
+
+	select {
+	case <-renderStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("render never started")
+	}
+
+	cancelJob() // the user closed the result box
+
+	select {
+	case w := <-done:
+		// The render was killed, which is a normal ok:false, not an error.
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+		}
+		if resp := decodeRender(t, w); resp.OK {
+			t.Error("a cancelled render must not report success")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the job did not stop the render")
+	}
+
+	// And the context handed to Render really was the job's, not just the
+	// request's — otherwise a DELETE would leave the container running.
+	if ctx := <-renderCtx; ctx.Err() == nil {
+		t.Error("render context was not cancelled with the job")
+	}
+}
+
+// A render for a job that is no longer running still works — the agent can
+// call after the job finished, and that is not a reason to refuse.
+func TestInternalRenderWithNoMatchingJob(t *testing.T) {
+	h, _, _, _ := newTestServer(t)
+	dir := workDirFor(t, "j_unknown1")
+
+	body, _ := json.Marshal(internalRenderRequest{Source: goodScene, WorkDir: dir})
+	w := doLocal(t, h, string(body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	if !decodeRender(t, w).OK {
+		t.Error("a render with no live job should still succeed")
+	}
+}

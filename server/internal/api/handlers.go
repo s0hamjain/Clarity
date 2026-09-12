@@ -15,6 +15,7 @@ import (
 
 	"github.com/s0hamjain/Clarity/server/internal/config"
 	"github.com/s0hamjain/Clarity/server/internal/jobs"
+	"github.com/s0hamjain/Clarity/server/internal/render"
 )
 
 // Limits from API.md §7.
@@ -34,6 +35,9 @@ type Pipeline interface {
 	Start(j *jobs.Job, imageB64, mediaType string)
 	// Cancel stops pending work for a job. Idempotent.
 	Cancel(ctx context.Context, id string) error
+	// JobContext returns a running job's context so /internal/render can bind
+	// a container's lifetime to it. False once the job is no longer running.
+	JobContext(id string) (context.Context, bool)
 }
 
 // Server wires the stores, the pipeline and the health checker into a router.
@@ -44,12 +48,12 @@ type Server struct {
 	pipeline Pipeline
 	health   *Health
 
-	// render is P2's render.Render (FRD §14.1), or the fake until it lands.
+	// render is P2's render.Render (FRD §14.1). A field, not a direct call, so
+	// tests can stand in for Docker.
 	render RenderFunc
-	// renderSem bounds concurrent `docker run`s across every job (rule 15).
-	// P2's render.Semaphore replaces this channel in Sprint 3; it is one
-	// instance shared by the whole process either way.
-	renderSem chan struct{}
+	// renderSem is P2's semaphore, one instance shared by every job, held
+	// around `docker run` and nothing else (rule 15).
+	renderSem render.Semaphore
 	// renderWait is how long a render may queue for a slot. Tests shorten it.
 	renderWait time.Duration
 }
@@ -62,7 +66,7 @@ func NewServer(cfg *config.Config, j jobs.Store, c jobs.CacheStore, p Pipeline, 
 		pipeline:   p,
 		health:     h,
 		render:     renderFn,
-		renderSem:  make(chan struct{}, cfg.RenderConcurrency),
+		renderSem:  render.NewSemaphore(cfg.RenderConcurrency),
 		renderWait: semaphoreWait,
 	}
 }

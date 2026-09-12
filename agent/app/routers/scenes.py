@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from app.graphs.manim_generator.graph import manim_generator_graph
+from app.graphs.manim_generator.state import SceneState
 from app.schemas import SceneRenderRequest, SceneRenderResponse
 
 router = APIRouter()
@@ -6,12 +8,41 @@ router = APIRouter()
 
 @router.post("/scenes/render", response_model=SceneRenderResponse)
 async def render_scene(req: SceneRenderRequest):
-    """POST /scenes/render - Manim Generator agent endpoint (Stubbed for Sprint 1)."""
-    return SceneRenderResponse(
-        ok=True,
-        clip_path=f"{req.work_dir}/scene{req.scene.index}.mp4",
-        attempts=1,
-        lint_retries=0,
-        snippets_used=[],
-        snippet_id=None,
-    )
+    """POST /scenes/render - Manim Generator agent endpoint: retrieve -> generate -> lint -> render -> repair -> ingest."""
+    try:
+        initial_state = SceneState(
+            job_id=req.job_id,
+            scene=req.scene,
+            storyboard_title=req.storyboard_title,
+            category=req.category,
+            guardrails=req.guardrails,
+            work_dir=req.work_dir,
+            quality=req.quality,
+        )
+
+        final_state = manim_generator_graph.invoke(
+            initial_state.model_dump(),
+            config={"configurable": {"thread_id": f"{req.job_id}/{req.scene.index}"}},
+        )
+
+        clip_path = final_state.get("clip_path")
+        ok = bool(clip_path)
+
+        return SceneRenderResponse(
+            ok=ok,
+            clip_path=clip_path,
+            attempts=final_state.get("attempts", 1),
+            lint_retries=final_state.get("lint_retries", 0),
+            snippets_used=final_state.get("snippets_used", []),
+            snippet_id=final_state.get("snippet_id"),
+            stage=final_state.get("stage") if not ok else None,
+            last_traceback=final_state.get("traceback") if not ok else None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": {"code": "model_error", "message": str(e), "details": {"provider": "anthropic"}}},
+        )

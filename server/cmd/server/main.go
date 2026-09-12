@@ -17,6 +17,7 @@ import (
 	"github.com/s0hamjain/Clarity/server/internal/api"
 	"github.com/s0hamjain/Clarity/server/internal/config"
 	"github.com/s0hamjain/Clarity/server/internal/jobs"
+	"github.com/s0hamjain/Clarity/server/internal/render"
 	"github.com/s0hamjain/Clarity/server/internal/store"
 )
 
@@ -80,19 +81,22 @@ func run() error {
 
 	agentClient := agent.New(cfg.AgentURL)
 
-	// The two swap points for work that is still landing. Sprint 3 replaces
-	// sceneFn with one POST /scenes/render per scene, and renderFn with P2's
-	// render.Render; Sprint 4 deletes the flags and the fakes with them.
-	sceneFn := jobs.FakeSceneFunc
-	renderFn := api.RenderFunc(api.FakeRender)
+	// /internal/render is always real: P2's Render runs generated code inside
+	// the sandbox, and no fake belongs in that path. Which scenes reach it is
+	// gated by FAKE_AGENT, since /scenes/render is an agent call.
+	renderFn := api.RenderFunc(render.Render)
+
+	// FAKE_RENDER now gates only the stitch-and-upload tail, the one piece P2
+	// has not delivered. Sprint 4 deletes the flag along with the fake.
+	concatFn := jobs.ConcatFunc(jobs.FakeConcat(cfg.FakeVideoURL))
 	if !cfg.FakeRender {
-		// render.Render does not exist yet (P2, Sprint 2-3). Refuse to start
-		// rather than pretend: a coordinator that silently renders nothing is
-		// worse than one that will not boot.
-		return errors.New("FAKE_RENDER=0 but P2's render.Render is not wired yet; leave FAKE_RENDER=1 until Sprint 3")
+		// Refuse to start rather than pretend: a coordinator that renders
+		// scenes and then silently loses them is worse than one that will not
+		// boot.
+		return errors.New("FAKE_RENDER=0 but P2's render.Concat is not wired yet; leave FAKE_RENDER=1 until it lands")
 	}
 
-	worker := jobs.NewWorker(cfg, jobStore, cacheStore, agentClient, sceneFn)
+	worker := jobs.NewWorker(cfg, jobStore, cacheStore, agentClient, concatFn)
 	srv := &http.Server{
 		Addr:              "127.0.0.1:" + cfg.Port,
 		Handler:           api.NewServer(cfg, jobStore, cacheStore, worker, health, renderFn).Routes(),

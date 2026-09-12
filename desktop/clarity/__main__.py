@@ -7,6 +7,8 @@
                                    just the capture: print its size and exit
     python -m clarity --once --save out.png
                                    same, and write the downscaled PNG to disk
+    python -m clarity --recents    the spotlight box with no capture and the
+                                   recents list open — works with no server
 """
 
 from __future__ import annotations
@@ -26,6 +28,11 @@ def _parse(argv: list[str]) -> argparse.Namespace:
         help="with --once: stop after the capture instead of opening the spotlight box",
     )
     p.add_argument("--save", metavar="PATH", help="with --once: write the downscaled PNG here")
+    p.add_argument(
+        "--recents",
+        action="store_true",
+        help="open the spotlight box on the recents list, without a capture, and exit when it closes",
+    )
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     # Not for people. The app re-runs itself with this to put each window in its
     # own process, because rumps and pywebview can't share a main thread
@@ -34,17 +41,54 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _run_session(open_windows) -> int:
+    """Run the flow outside the menu-bar app and wait for the last window.
+
+    Every window is its own process, so this thread only has to wait for them
+    all to close (`clarity/window_host.py`).
+    """
+    import threading
+
+    from .config import Config
+    from .session import Session
+
+    config = Config()
+    idle = threading.Event()
+    session = Session(config, on_all_closed=idle.set)
+    print(f"coordinator: {config.server_url}")
+    open_windows(session)
+
+    try:
+        idle.wait()
+    except KeyboardInterrupt:
+        session.close_all()
+    return 0
+
+
+def _run_recents() -> int:
+    """The recents list on its own — the one path that needs no server and no
+    capture (FRD §16.5)."""
+    from .recents import Recents
+
+    entries = Recents().list()
+    print(f"{len(entries)} recent(s)")
+    if not entries:
+        print("nothing to list yet; run --once first")
+        return 1
+    for entry in entries[:8]:
+        mark = "•" if entry.video_url else " "
+        missing = "" if entry.screenshot_exists else "  (screenshot missing)"
+        print(f" {mark} {entry.id}  {entry.label[:56]}{missing}")
+    return _run_session(lambda session: session.open_spotlight(None, expanded=True))
+
+
 def _run_once(save: str | None, ask: bool) -> int:
     """One capture without the hotkey — the end-to-end test hook.
 
     With `ask` (the default) it runs the real flow: spotlight box, submit to the
     coordinator, result box, and it waits until the last window is closed.
     """
-    import threading
-
     from . import capture
-    from .config import Config
-    from .session import Session
 
     cap = capture.capture_region()
     if cap is None:
@@ -65,19 +109,7 @@ def _run_once(save: str | None, ask: bool) -> int:
     if not ask:
         return 0
 
-    config = Config()
-    idle = threading.Event()
-    session = Session(config, on_all_closed=idle.set)
-    print(f"coordinator: {config.server_url}")
-    session.open_spotlight(cap)
-
-    # Every window runs in its own process, so this thread only has to wait for
-    # the last one to close.
-    try:
-        idle.wait()
-    except KeyboardInterrupt:
-        session.close_all()
-    return 0
+    return _run_session(lambda session: session.open_spotlight(cap))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,6 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    if args.recents:
+        return _run_recents()
 
     if args.once:
         return _run_once(args.save, ask=not args.no_ask)

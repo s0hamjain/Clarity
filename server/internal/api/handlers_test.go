@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/s0hamjain/Clarity/server/internal/config"
 	"github.com/s0hamjain/Clarity/server/internal/jobs"
+	"github.com/s0hamjain/Clarity/server/internal/render"
 	"github.com/s0hamjain/Clarity/server/internal/store"
 )
 
@@ -20,12 +23,23 @@ type stubPipeline struct {
 	mu        sync.Mutex
 	started   []string
 	cancelled []string
+	contexts  map[string]context.Context
 }
 
 func (p *stubPipeline) Start(j *jobs.Job, imageB64, mediaType string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.started = append(p.started, j.ID)
+}
+
+// JobContext reports no running job by default, which is the state
+// /internal/render must handle anyway: the agent can call it for a job that
+// has already finished or been cancelled.
+func (p *stubPipeline) JobContext(id string) (context.Context, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ctx, ok := p.contexts[id]
+	return ctx, ok
 }
 
 func (p *stubPipeline) Cancel(ctx context.Context, id string) error {
@@ -54,7 +68,7 @@ func newTestServerFull(t *testing.T) (*Server, jobs.Store, jobs.CacheStore, *stu
 	}
 	jobStore, cacheStore := store.NewMemoryJobs(), store.NewMemoryCache()
 	pipe := &stubPipeline{}
-	srv := NewServer(cfg, jobStore, cacheStore, pipe, NewHealth(cfg, nil), FakeRender)
+	srv := NewServer(cfg, jobStore, cacheStore, pipe, NewHealth(cfg, nil), stubRender)
 	return srv, jobStore, cacheStore, pipe
 }
 
@@ -324,4 +338,18 @@ func TestHealthzShape(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 when ok is false", w.Code)
 	}
+}
+
+// stubRender stands in for P2's render.Render so the API tests need no Docker.
+// It writes a small file where a clip would be, because /internal/render's
+// caller is entitled to find something at clip_path.
+func stubRender(ctx context.Context, src, workDir, quality string) (string, *render.RenderError) {
+	if ctx.Err() != nil {
+		return "", &render.RenderError{Stage: "timeout", Traceback: "cancelled"}
+	}
+	clipPath := filepath.Join(workDir, "scene.mp4")
+	if err := os.WriteFile(clipPath, []byte("not really an mp4"), 0o644); err != nil {
+		return "", &render.RenderError{Stage: "container", Traceback: err.Error()}
+	}
+	return clipPath, nil
 }

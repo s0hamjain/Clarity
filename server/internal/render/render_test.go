@@ -102,6 +102,37 @@ class GeneratedScene(Scene):
 	}
 }
 
+// TestRenderRejectsSilentlyEmptyScene confirms Sprint 3's core promise: a
+// scene whose play() calls all silently fail — here, a construct with no
+// animation at all, just a brief wait — exits 0 and produces a real MP4 file,
+// but validateClip must still reject it before it ever reaches Concat.
+func TestRenderRejectsSilentlyEmptyScene(t *testing.T) {
+	if !dockerAvailable(t) {
+		return
+	}
+	src := `from manim import *
+
+
+class GeneratedScene(Scene):
+    def construct(self):
+        self.wait(0.1)
+`
+	workDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	_, rerr := Render(ctx, src, workDir, "-ql")
+	if rerr == nil {
+		t.Fatal("expected a render error for a silently-empty scene, got success")
+	}
+	if rerr.Stage != "container" {
+		t.Fatalf("expected stage %q, got %q", "container", rerr.Stage)
+	}
+	if !strings.Contains(rerr.Traceback, "clip invalid") {
+		t.Fatalf("expected validateClip's rejection, got: %s", rerr.Traceback)
+	}
+}
+
 // TestRenderTimeoutKillsContainer proves the container is actually killed on
 // timeout, not just the docker CLI process (FRD §23 rule 15). Passes a short
 // deadline instead of waiting the real 120s — Render's internal timeout

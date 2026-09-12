@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/s0hamjain/Clarity/server/internal/agent"
@@ -20,6 +21,23 @@ type SceneFunc func(ctx context.Context, scene agent.Scene, workDir string) (cli
 // filesystem — true today, since they run on the same Mac.
 func WorkRoot(jobID string) string {
 	return filepath.Join(os.TempDir(), "clarity", jobID)
+}
+
+// IDFromWorkDir recovers the job ID from a path under WorkRoot. The agent
+// passes work_dir to /internal/render but not the job ID, and the coordinator
+// needs the job to bind the render to its cancellation. Returns "" for a path
+// that is not under the work root.
+func IDFromWorkDir(workDir string) string {
+	root := filepath.Clean(filepath.Join(os.TempDir(), "clarity"))
+	rel, err := filepath.Rel(root, filepath.Clean(workDir))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" || parts[0] == ".." || parts[0] == "." {
+		return ""
+	}
+	return parts[0]
 }
 
 // fanOut renders every scene concurrently and returns the clips of the ones
