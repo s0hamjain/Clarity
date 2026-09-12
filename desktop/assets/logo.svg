@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4338CA"/>
+      <stop offset="55%" stop-color="#4F46E5"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E0F2FE"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="30%" cy="22%" r="75%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="45%" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-color="#0B1B4D" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- app-icon squircle background -->
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#sheen)"/>
+
+  <!-- focus / aperture ring with an opening, filled by a play triangle: "bring the problem into focus, then watch it" -->
+  <g filter="url(#soft)">
+    <path d="
+      M 512 236
+      A 276 276 0 1 1 316.5 350
+      "
+      fill="none" stroke="url(#ring)" stroke-width="54" stroke-linecap="round"/>
+
+    <!-- play triangle sitting in the ring's opening, pointing toward the gap -->
+    <path d="M 452 392 L 452 656 L 676 524 Z" fill="url(#ring)"/>
+  </g>
+
+  <!-- insight spark -->
+  <path d="
+    M 748 208
+    L 766 258
+    L 816 276
+    L 766 294
+    L 748 344
+    L 730 294
+    L 680 276
+    L 730 258
+    Z"
+    fill="#FDE68A"/>
+</svg>
