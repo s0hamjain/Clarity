@@ -10,14 +10,22 @@ All shapes referenced below are in `docs/FRD.md`. Section numbers (e.g. "FRD §1
 
 ## Path Overview
 
-| Path | Person | Domain | Primary Directories |
-|---|---|---|---|
-| **Path A** | P1 | Agent service — every Claude call, embeddings, Atlas Vector Search retrieval, snippet corpus ingest, prompts | `agent/` |
-| **Path B** | P2 | Render pipeline — `manim-worker` image, seed scenes, static pre-check, per-scene Docker render, repair loop, ffmpeg concat, S3 upload | `docker/`, `samples/`, `server/internal/render/` |
-| **Path C** | P3 | Coordinator — public HTTP API, job lifecycle in Atlas, cache, per-scene fan-out orchestration, agent client, health | `server/` (everything except `internal/render/`) |
-| **Path D** | P4 | Desktop app + installer — menu bar app, hotkey, capture, spotlight box with recents, result box, PyInstaller build, DMG/PKG, release | `desktop/` |
+Four people, four roles, four directories. Each role is one sentence. Nobody edits another role's directory.
 
-P2 and P3 both write Go in the same module. They are separate paths because they are separate problems: one wrangles containers and ffmpeg, the other is an HTTP server with a job store. They meet at three function signatures (FRD §14.1).
+| Person | Role — one sentence | Owns | Does **not** touch |
+|---|---|---|---|
+| **P1 — AI** | Makes the model produce correct JSON: transcription, explanation + storyboard, snippet retrieval, Manim code, repair. | `agent/` — FastAPI service, prompts, Claude/Voyage/Atlas clients, seed + promote scripts, experiments | Go, Docker, desktop UI |
+| **P2 — Render** | Turns a string of Manim source into an MP4 on S3, safely: image, pre-check, container, repair loop, concat, upload; and writes the verified seed scenes. | `docker/`, `samples/`, `server/internal/render/` | HTTP handlers, job store, prompts, desktop UI |
+| **P3 — Backend** | Runs the job: public API, Atlas job store + cache, calls P1's endpoints and P2's functions in order, fans scenes out, reports status. | `server/` except `internal/render/` | Prompts, Dockerfile, render internals, desktop UI |
+| **P4 — Desktop** | Everything the user sees and installs: hotkey, region capture, spotlight box, recents, result box, build, DMG/PKG, release. | `desktop/` | Anything server-side |
+
+**Where roles meet** (the only shared surfaces):
+- P3 ↔ P1: the HTTP shapes in FRD §10. P1 implements, P3 calls.
+- P3 ↔ P2: the three Go signatures in FRD §14.1. P2 implements, P3 calls. Same Go module, different packages.
+- P4 ↔ P3: the HTTP shapes in FRD §11. P3 implements, P4 calls.
+- P1 ↔ P2: the `samples/*.py` docstring format in FRD §13. P2 writes files, P1's script reads them.
+
+A change to any of those four surfaces is an FRD change: own commit, straight to `main`, announced.
 
 ### What each path fakes
 
@@ -191,10 +199,10 @@ Cover: `Axes` + `plot` with a moving dot; `Transform` between two `MathTex`; `VG
 ### P4 — Spotlight Box, Result Box, Real Submit
 
 **Step 1 — Spotlight box** (ref: FRD §5, §15.1)
-`desktop/avlt/spotlight_window.py` + `desktop/avlt/ui/spotlight/{index.html,spotlight.js,spotlight.css}`. `webview.create_window(..., frameless=True, transparent=True, vibrancy=True, on_top=True, width=680, height=96)` centered on the display the cursor is on. Thumbnail of the capture on the left (data URL passed in via `js_api`), one text input on the right, placeholder *"Add context… (why is my binary search not working? visualize where it's messing up)"*. **Enter** → `js_api.submit(text)`; **Esc** → `js_api.cancel()`. Input focused on open. **First thing to verify:** transparency + vibrancy actually render on your macOS version; if not, fall back to a solid dark box with 92% opacity and move on (FRD §24).
+`desktop/avlt/spotlight_window.py` + `desktop/avlt/ui/spotlight/{index.html,spotlight.js,spotlight.css}`. `webview.create_window(..., frameless=True, transparent=True, vibrancy=True, on_top=True, width=680, height=96)` centered on the display the cursor is on. **Animates in** (CSS: opacity 0→1, scale 0.96→1, 180 ms ease-out) and out on submit (120 ms). Thumbnail of the capture on the left (data URL passed in via `js_api`), one text input on the right, placeholder *"Add context… (why is my binary search not working? visualize where it's messing up)"*. **Enter** → `js_api.submit(text)`; **Esc** → `js_api.cancel()`. Input focused on open. **First thing to verify:** transparency + vibrancy actually render on your macOS version; if not, fall back to a solid dark box with 92% opacity and move on (FRD §24).
 
-**Step 2 — Result box** (ref: FRD §15.1, §11.2)
-`desktop/avlt/result_window.py` + `desktop/avlt/ui/result/{index.html,result.js,result.css}` + `ui/shared/marked.min.js` (vendored). `webview.create_window(url=…/index.html?job=<id>&server=<url>, width=440, height=680, frameless=True, on_top=True, vibrancy=True)`. Draggable header, close button. `result.js`: poll every 1 s; status line in plain words; render `explanation` the first time it's non-null; scene progress; `<video controls autoplay muted>` on `video_url`; `done` + null video → quiet note; 404 → "expired"; 180 s → retry button. Opening a new result box closes the previous one.
+**Step 2 — Result box** (ref: FRD §5, §15.1, §11.2)
+`desktop/avlt/result_window.py` + `desktop/avlt/ui/result/{index.html,result.js,result.css}` + `ui/shared/marked.min.js` (vendored). `webview.create_window(url=…/index.html?job=<id>&server=<url>, width=440, height=680, frameless=True, transparent=True, on_top=True, vibrancy=True, easy_drag=True)`. **Whole box drags** (`easy_drag`), video and text excluded. **X** top-right and **Esc** → `window.close()`. Each job opens a new box offset 24 px; old ones stay until closed. `result.js`: poll every 1 s; status line in plain words; render `explanation` the first time it's non-null; scene progress; `<video controls autoplay muted>` on `video_url`; `done` + null video → quiet note; 404 → "expired"; 180 s → retry button.
 
 **Step 3 — Submit + notification** (ref: FRD §15.1)
 `desktop/avlt/client.py`: `POST /api/jobs` with `source: "desktop"` and the guardrails setting; on `ConnectionError` → `rumps.notification("Can't reach the server", ...)` and the spotlight box stays open. Notification when the explanation first appears.
@@ -206,7 +214,7 @@ Switch from the stub to `localhost:8080`. A real capture should now produce a re
 
 ### Sprint 2 Sync Point
 
-1. `⌘⇧E` → drag → spotlight box → type context → Enter → **real explanation in the result box in under 10 s.** This is the product. Everything after is upside.
+1. `⌘⇧E` → drag region → spotlight box animates in → type context → Enter → **real explanation in the result box in under 10 s.** Drag the box off the problem. Click X. This is the product.
 1b. The spotlight box is actually translucent and blurred over whatever is behind it (or the solid fallback is in place and the FRD §24 question is answered).
 2. `snippets_verified ≥ 20` in `/healthz`; `/snippets/search` returns the right seed for a plotting query and for an array-walk query.
 3. `Render()` renders every seed through a real container; `render_test.go` passes.
@@ -401,10 +409,10 @@ Everyone works until the end of the sprint on their own branch, then everyone's 
 
 | Path | Person | Primary Files | Secondary (may touch with notice) |
 |---|---|---|---|
-| A | P1 | `agent/**`, `samples/` docstring format | `server/internal/cache/key.go` (PromptVersion bump only) |
-| B | P2 | `docker/**`, `samples/**`, `server/internal/render/**` | — |
-| C | P3 | `server/cmd/**`, `server/internal/{api,store,jobs,cache,agent}/**` | `server/internal/render/` interface signatures (with P2) |
-| D | P4 | `desktop/**` | — |
+| A — AI | P1 | `agent/**` | `server/internal/cache/key.go` — the one-line `PromptVersion` bump only |
+| B — Render | P2 | `docker/**`, `samples/**`, `server/internal/render/**` | — |
+| C — Backend | P3 | `server/cmd/**`, `server/internal/{api,store,jobs,cache,agent}/**`, `server/go.mod` | — |
+| D — Desktop | P4 | `desktop/**` | — |
 | All | — | `docs/**`, `AGENTS.md`, `FILE_STRUCTURE.md`, `README.md` | — |
 
 ---
