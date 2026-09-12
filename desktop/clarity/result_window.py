@@ -17,6 +17,7 @@ is what runs in the child process.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Callable
 from urllib.parse import quote
@@ -220,6 +221,11 @@ def run_window(payload: dict[str, Any]) -> None:
     window.events.loaded += on_loaded
 
     def on_command(message: dict[str, Any]) -> None:
+        if message.get("cmd") == "dump" and os.environ.get("CLARITY_DEBUG"):
+            # Read back what the page is actually showing, so the failure states
+            # in FRD §19 can be checked without a person looking at them.
+            window_host.emit("dump", state=window_host.evaluate(window, "window.clarityDump()"))
+            return
         if message.get("cmd") != "close":
             return
         # Go through the page so this behaves exactly like the X button —

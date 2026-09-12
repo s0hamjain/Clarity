@@ -53,7 +53,10 @@ python -m clarity --once --no-ask          # just the capture; prints its size a
 python -m clarity --once --save ~/Desktop/cap.png
 ```
 
-`CLARITY_DEBUG=1` turns on debug logging inside the window processes.
+`CLARITY_DEBUG=1` turns on debug logging inside the window processes, and lets
+the app ask a result box what it is currently showing — status line, note,
+failure text, video source — so the states in FRD §19 can be tested without a
+person reading them off the screen.
 
 ### You need a coordinator running
 

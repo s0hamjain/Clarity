@@ -231,6 +231,19 @@
   /* The host closes the window through the same path as the X button, so a box
    * closed because the app is quitting still cancels a job in flight. */
   window.clarityClose = close;
+
+  /* What the box is showing right now, for tests of the FRD §19 states. Only
+   * ever called when CLARITY_DEBUG is set. */
+  window.clarityDump = function () {
+    return {
+      status: statusEl.textContent,
+      explanation: explanationEl.hidden ? null : explanationEl.textContent.slice(0, 80),
+      note: noteEl.hidden ? null : noteEl.textContent,
+      failure: failureEl.hidden ? null : failureTextEl.textContent,
+      retry: !failureEl.hidden && !retryEl.hidden,
+      video: videoWrap.hidden ? null : videoEl.getAttribute("src")
+    };
+  };
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape") {
       event.preventDefault();
