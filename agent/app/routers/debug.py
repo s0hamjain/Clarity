@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from app.graphs.manim_generator.nodes import generate_node
+from app.graphs.manim_generator.state import SceneState
 from app.schemas import CodegenRequest, CodegenResponse
 
 router = APIRouter()
@@ -6,15 +8,25 @@ router = APIRouter()
 
 @router.post("/codegen", response_model=CodegenResponse)
 async def debug_codegen(req: CodegenRequest):
-    """POST /codegen - Debug endpoint running generate node alone (Stubbed for Sprint 1)."""
-    return CodegenResponse(
-        manim_source="""from manim import *
+    """POST /codegen - Debug endpoint running generate node alone."""
+    try:
+        state = SceneState(
+            job_id="debug_job",
+            scene=req.scene,
+            storyboard_title="Debug Codegen",
+            category="algorithm",
+            guardrails=req.guardrails,
+            work_dir="/tmp/debug",
+            snippets=req.snippets,
+            source=req.previous_source,
+            traceback=req.traceback,
+        )
 
-class GeneratedScene(Scene):
-    def construct(self):
-        t = Text("Hello Clarity")
-        self.play(Write(t))
-        self.wait(1)
-""",
-        scene_class="GeneratedScene",
-    )
+        res = generate_node(state)
+        source = res.get("source", "")
+        return CodegenResponse(manim_source=source, scene_class="GeneratedScene")
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": {"code": "model_error", "message": str(e), "details": {"provider": "anthropic"}}},
+        )
