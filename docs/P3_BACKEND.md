@@ -10,7 +10,8 @@ You contain no AI logic and no rendering logic. You are a dispatcher. Your harde
 
 1. **Accept a job.** `POST /api/jobs` with an image and text → save a job record → return a job ID in under 50 ms. Everything else happens in the background.
 2. **Report status.** `GET /api/jobs/{id}` returns the job record. The desktop app polls it every second.
-3. **Drive the pipeline.** In a goroutine: ask P1 to transcribe → hash the text → check the cache → (miss) ask P1 to explain → **save the explanation immediately** → for each scene in parallel, ask P1 for snippets and code and P2 to render → ask P2 to stitch and upload → save the video URL → mark done.
+3. **Drive the pipeline.** In a goroutine: ask P1 to transcribe → hash the text → check the cache → (miss) ask P1 to explain → **save the explanation immediately** → for each scene in parallel, call P1's Manim Generator agent (`POST /scenes/render`) and collect the clips → ask P2 to stitch and upload → save the video URL → mark done.
+3b. **Be the agent's render tool.** `POST /internal/render` — localhost only — takes source + `work_dir` + `quality`, acquires P2's semaphore, runs the pre-check, calls P2's `Render()`, returns the clip path or the traceback. The agent decides whether to try again; you just render.
 4. **Cache.** Same problem twice → skip everything and return the stored result in under a second.
 5. **Cancel.** `DELETE /api/jobs/{id}` stops pending work.
 6. **Never hang.** Every goroutine recovers from panics. Every job ends in `done`, `failed`, or `cancelled`.
@@ -40,7 +41,8 @@ You contain no AI logic and no rendering logic. You are a dispatcher. Your harde
 |---|---|---|---|
 | Public HTTP API (`/api/jobs`, `/healthz`, …) | **You** | P4's desktop app | [API.md §2](API.md#2-coordinator-api) |
 | Agent HTTP API (`/vision`, `/explain`, `/snippets/search`, `/codegen`, `/snippets/ingest`) | P1 | **You** | [API.md §3](API.md#3-agent-service-api) |
-| `Render`, `RenderWithRepair`, `Concat` | P2 | **You** | [FRD §14.1](FRD.md#14-render-pipeline) |
+| `Render`, `Concat`, `Semaphore` | P2 | **You** (from `/internal/render` and the job tail) | [FRD §14.1](FRD.md#14-render-pipeline) |
+| `POST /internal/render` | **You** | P1's agent render tool | [API.md §2.7](API.md#27-post-internalrender--render-one-source-file-internal-called-by-the-agent) |
 | `jobs` and `cache` documents | **You** | P4 reads the job shape through your API | [FRD §9.1–9.2](FRD.md#9-database-schema-mongodb-atlas) |
 
 **You start on fakes, and your fakes are everyone's stub.** `FAKE_AGENT=1` hardcodes P1's responses; `FAKE_RENDER=1` copies a sample MP4 instead of rendering. Together they make your server walk a job through every status on a timer — P4 builds the whole UI against that. Swap in the real things as they land (Sprint 2 for P1, Sprint 3 for P2). Delete the flags in Sprint 4.
@@ -65,6 +67,7 @@ server/
 └── internal/
     ├── api/
     │   ├── handlers.go              # POST /api/jobs · GET /api/jobs/{id} · DELETE /api/jobs/{id} · GET /api/cache/{hash} · GET /healthz
+│   ├── internal_render.go       # POST /internal/render — localhost only; semaphore → precheck → render.Render()
     │   ├── errors.go                # the one error envelope (API.md §4)
     │   └── cors.go                  # Access-Control-Allow-Origin: * on every response, including 404/5xx
     ├── store/
@@ -139,7 +142,7 @@ release/
 **Goal:** a real screenshot produces a real explanation, saved the instant it arrives; a repeated screenshot hits the cache.
 
 ### Step 1 — Agent client (1 h)
-- `agent/client.go`: one typed function per P1 endpoint, request/response structs matching **API.md §3** exactly. Timeouts: `/vision` 30 s, `/explain` 45 s, `/snippets/search` 10 s, `/codegen` 90 s (API.md §7). Strip the `data:image/png;base64,` prefix before `/vision` — P1 receives raw base64. Map P1's error envelope into a Go error you can log.
+- `agent/client.go`: one typed function per P1 endpoint you call — `Vision`, `Explain`, `ScenesRender` — request/response structs matching **API.md §3** exactly. Timeouts: `/vision` 30 s, `/explain` 90 s, `/scenes/render` 11 min (API.md §7). Strip the `data:image/png;base64,` prefix before `/vision` — P1 receives raw base64. Map P1's error envelope into a Go error you can log.
 
 ### Step 2 — The real pipeline through `/explain` (1.5 h)
 `worker.go`, replacing the fake:
@@ -155,9 +158,10 @@ generating   → (still fake from here in this sprint)
 ```
 That bolded line is the most important line in the server. The desktop app shows the explanation the moment it's non-null; every second between `/explain` returning and that write is a second the user waits for nothing.
 
-### Step 3 — Fan-out skeleton (1 h)
-- `jobs/scenes.go`: for N scenes, start N goroutines bounded by P2's semaphore (import `render.Semaphore`; until P2 ships it, a local buffered channel). Each goroutine: `defer recover()` → mark that scene failed, never the job. Each calls a `SceneFunc(ctx, scene) (clipPath string, err error)` and on return increments `scenes_done`. Wait for all N. Collect successful clip paths in scene order.
-- `SceneFunc` is fake this sprint: sleep 2 s, copy the sample MP4.
+### Step 3 — Fan-out skeleton + `/internal/render` (1.5 h)
+- `jobs/scenes.go`: for N scenes, create `work_dir = <tmp>/<job_id>/scene<i>` and start N goroutines (no semaphore here — that lives in `/internal/render`). Each goroutine: `defer recover()` → mark that scene failed, never the job. Each calls `SceneFunc(ctx, scene, workDir) (clipPath string, ok bool)` and on return increments `scenes_done`. Wait for all N. Collect clip paths in scene order.
+- `SceneFunc` is fake this sprint (`FAKE_RENDER=1`): sleep 2 s, copy the sample MP4.
+- `api/internal_render.go`: `POST /internal/render` per API.md §2.7. Refuse non-loopback remote addresses with `403`. Acquire `render.Semaphore` (60 s max wait → `429 render_busy`), run `render.Precheck`, call `render.Render(ctx, source, workDir, quality)`, return `{ok, clip_path}` or `{ok: false, stage, traceback}`. Until P2's `Render` lands, `FAKE_RENDER=1` copies the sample MP4 here too. **P1 needs this in Sprint 3** — ship it at the end of Sprint 2.
 
 ### Step 4 — Cache write (30 min)
 After the (fake) concat/upload: `store.Cache.Put(hash, videoURL, explanation)` — **both fields**, so a hit shows text while the video loads. Then `done`. **Never write the cache on any failure path.**
@@ -176,13 +180,13 @@ After the (fake) concat/upload: `store.Cache.Put(hash, videoURL, explanation)` �
 
 **Goal:** one capture → real video URL, all real; a closed result box cancels its job.
 
-### Step 1 — Real `SceneFunc` (1 h)
+### Step 1 — Real `SceneFunc` (45 min)
 ```go
-retrieve := func(scene, hint) []Snippet { return agent.SnippetsSearch(scene, category, 3, hint) }
-codegen  := func(scene, snippets, prevSrc, tb) string { return agent.Codegen(scene, snippets, prevSrc, tb, guardrails) }
-clip, rerr := render.RenderWithRepair(ctx, scene, retrieve, codegen)
+resp, err := agent.ScenesRender(ctx, agent.SceneRenderRequest{JobID, Scene: scene, StoryboardTitle, Category, Guardrails, WorkDir: workDir, Quality: cfg.ManimQuality})
+if err != nil || !resp.OK { log(...); return "", false }   // drop this scene, never the job
+return resp.ClipPath, true
 ```
-A `rerr` after 3 attempts means **drop this scene** — log it, increment `scenes_done`, return no clip. Never fail the job for one scene.
+One HTTP call per scene with an **11-minute** client timeout (API.md §7). The agent owns retrieve → generate → lint → render → repair; while it loops it calls back into your `/internal/render`. Log `resp.Attempts` and `resp.SnippetID`.
 
 ### Step 2 — Tail of the pipeline (1 h)
 ```
@@ -192,11 +196,11 @@ uploading     → (Concat does the upload; status is for the UI)
               → store.Cache.Put(hash, url, explanation)
 done          → video_url = url
 ```
-Post-render ingest: for every successful scene, `go agent.SnippetsIngest({source, title: storyboard.title+" — scene "+i, description: scene.visual, category, origin: "generated", verified: false})`. Fire-and-forget; log errors, never fail the job.
+Post-render ingest is the agent's job now (its `ingest` node) — nothing to do here except log `snippet_id`.
 
 ### Step 3 — Cancel (45 min)
-- Each job gets a `context.WithCancel`; keep the cancel func in a map by job ID.
-- `DELETE /api/jobs/{id}`: call cancel → pending scenes see `ctx.Done()` and skip; running containers are killed by P2's `Render` on ctx cancellation; status `cancelled`; no cache write. Idempotent: cancelling a finished job returns `200` with the current status.
+- Each job gets a `context.WithCancel`; keep the cancel func in a map by job ID. Pass the job's ctx into every `/scenes/render` call so cancelling aborts the HTTP request, and have `/internal/render` look up the job's ctx by `work_dir` prefix so a running container is killed too.
+- `DELETE /api/jobs/{id}`: call cancel → in-flight agent calls abort, running containers die via ctx, status `cancelled`, no cache write. Idempotent: cancelling a finished job returns `200` with the current status.
 - `GET /api/cache/{hash}` for pre-warm checks (API.md §2.5).
 
 ### Step 4 — Real `/healthz` (30 min)
@@ -204,7 +208,8 @@ Boot-time checks, refreshed every 60 s: Atlas ping, `docker info`, S3 `HeadBucke
 
 ### Done when
 - [ ] One real capture → `done` with a `video_url` that plays. All real, no fakes.
-- [ ] Inject a bad import into one scene's code → that scene drops, the other scenes' video still plays, `scenes_done == scenes_total`.
+- [ ] Force one scene's agent call to return `ok: false` (P1 has a debug flag) → that scene drops, the other scenes' video still plays, `scenes_done == scenes_total`.
+- [ ] `curl -X POST localhost:8080/internal/render` with a sample source → `{ok: true, clip_path}`; from another machine → `403`.
 - [ ] `DELETE` mid-render → `cancelled` within a few seconds, `docker ps` empty, nothing in `cache`.
 - [ ] `/healthz` all `true` from a fresh boot.
 
@@ -218,7 +223,8 @@ Boot-time checks, refreshed every 60 s: Atlas ping, `docker info`, S3 `HeadBucke
 
 1. **Two-machine cache test (1 h).** Two Macs, same Atlas cluster, same problem captured at different zoom levels. The second must be `cached: true`. If not, log both `Normalize()` outputs and diff them — this is the moment you find out whether the cache design works at all.
 2. **Failure injection (1 h).** Stop the agent service mid-job → `failed`, not stuck. Stop Docker mid-render → scenes fail, job ends `done`/no video. Panic inside `SceneFunc` → siblings finish. Kill the coordinator mid-job and restart → the job record in Atlas is intact (it may never finish — that's acceptable; it must not corrupt).
-3. **Overload (30 min).** A bounded job queue (depth 32). Over the bound → `503 queue_full` with `Retry-After`.
+3. **Overload (30 min).** A bounded job queue (depth 32). Over the bound → `503 queue_full` with `Retry-After`. `/internal/render` semaphore wait > 60 s → `429 render_busy`.
+3b. **Structured logging (30 min).** Every log line carries `request_id`, `job_id`, and `scene` where applicable; JSON to stdout. The agent's `thread_id` is `job_id/scene`, so the two services' logs join on it.
 4. **`updated_at` audit (15 min).** Grep every `store.Jobs.Update` call — every one sets `updated_at`. A job that sits in `rendering` for 3 minutes must not expire.
 5. **Delete the fake flags (15 min).** `FAKE_AGENT` and `FAKE_RENDER` go away. Everything is real from here.
 6. **PKG installer (1 h).** P4 hands you `dist/Clarity.app` at their Sprint 4 Step 2. In `release/`:
@@ -261,7 +267,7 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 ## Your rules (never break these — FRD §23)
 
 7. `POST /api/jobs` writes the job and returns. Everything else runs in a goroutine with `defer recover()`.
-8. `explanation` is written to `jobs` **before** any `/snippets/search` or `/codegen` call.
+8. `explanation` is written to `jobs` **before** any `/scenes/render` call.
 9. Every `jobs` write sets `updated_at = now`.
 10. `cache` is written only after upload succeeds. Never on any failure path.
 11. The cache-hit path never calls `/explain`.
@@ -275,7 +281,8 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 - A job that never touches `updated_at` during a 3-minute render gets deleted by the TTL index mid-flight. The desktop app sees a 404. Rule 9.
 - `defer recover()` in the *parent* goroutine doesn't catch panics in scene goroutines. Each one needs its own.
 - A cache hit that returns only `video_url` shows the user a loading video with nothing to read. Return both.
-- Killing the `docker` CLI doesn't kill the container — but that's P2's problem to solve inside `Render`. Yours is to cancel the `ctx`.
+- Killing the `docker` CLI doesn't kill the container — that's P2's problem inside `Render`. Yours is to cancel the `ctx`.
+- `/internal/render` without the semaphore = N agents × 3 attempts of concurrent Docker runs. Always acquire.
 
 ## If you're blocked
 

@@ -7,8 +7,8 @@ This file is the **team-level** view: who does what, how the four pieces meet, h
 
 | Person | Role | Your file |
 |---|---|---|
-| **P1** | AI — the Python service that makes every model call (Gemini OCR, Claude explanation + code) | **[P1_AI.md](P1_AI.md)** |
-| **P2** | Render — Docker sandbox, Manim samples, video pipeline | **[P2_RENDER.md](P2_RENDER.md)** |
+| **P1** | AI — LangGraph agents (Intake, Explainer, Manim Generator) over a MongoDB Atlas vector store; every model call | **[P1_AI.md](P1_AI.md)** |
+| **P2** | Render — Docker sandbox, `Render()` + validation, Manim samples, concat + S3 | **[P2_RENDER.md](P2_RENDER.md)** |
 | **P3** | Backend — the Go coordinator: API, database, orchestration; plus the release (PKG, GitHub Release) | **[P3_BACKEND.md](P3_BACKEND.md)** |
 | **P4** | Desktop — the menu-bar app, the two windows, the `.app` and `.dmg` | **[P4_DESKTOP.md](P4_DESKTOP.md)** |
 
@@ -25,12 +25,13 @@ Each file is self-contained: your job in plain words, what you own and never tou
 | P3 | `server/**` except `internal/render/`, `release/**` | Prompts, Dockerfile, render internals, desktop UI |
 | P4 | `desktop/**` | Anything server-side, `release/` |
 
-Five directories, four people. The only shared surfaces are five contracts, each written down once:
+Five directories, four people. The only shared surfaces are six contracts, each written down once:
 
 | Contract | Written in | Implemented by | Consumed by |
 |---|---|---|---|
-| Agent HTTP API | [API.md §3](API.md#3-agent-service-api) | P1 | P3 |
-| Render Go functions (`Render`, `RenderWithRepair`, `Concat`) | [FRD §14.1](FRD.md#14-render-pipeline) | P2 | P3 |
+| Agent HTTP API (`/vision`, `/explain`, `/scenes/render`) | [API.md §3](API.md#3-agent-service-api) | P1 | P3 |
+| `POST /internal/render` (the agent's render tool) | [API.md §2.7](API.md#27-post-internalrender--render-one-source-file-internal-called-by-the-agent) | P3 | P1 |
+| Render Go functions (`Render`, `Concat`, `Semaphore`) | [FRD §14.1](FRD.md#14-render-pipeline) | P2 | P3 |
 | Coordinator HTTP API | [API.md §2](API.md#2-coordinator-api) | P3 | P4 |
 | `samples/*.py` docstring header | [FRD §13](FRD.md#13-rag-design--the-manim-snippet-corpus) | P2 | P1 |
 | `dist/Clarity.app` + `dist/Clarity.dmg` (built artifacts) | [FRD §15.2](FRD.md#15-desktop-app-and-installer) | P4 | P3 packages and publishes |
@@ -61,14 +62,13 @@ Unassigned. Anyone who finishes a sprint early takes the top item they can do, t
 | # | Item | Directory | Spec |
 |---|---|---|---|
 | 1 | `GET /api/jobs/{id}/events` — SSE stream so the result box doesn't poll | `server/` | API.md §2.4 |
-| 2 | `ffprobe`-based clip validation beyond the size floor (duration, resolution) | `server/internal/render/` | FRD §17 F40 |
 | 3 | 10 more `samples/*.py` covering the error classes seen in repair logs | `samples/` | FRD §13 |
 | 4 | Ingest 30 worked examples from the Manim CE docs into the snippet corpus (`origin: "manim_docs"`) | `agent/scripts/` | FRD §13 |
 | 5 | Guardrails eval script: 10 problems, pass/fail, pass rate printed | `agent/experiments/` | FRD §24 |
 | 6 | Result box: keyboard shortcuts (space play/pause, ← → seek) and a copy-explanation button | `desktop/clarity/ui/result/` | FRD §15.1 |
 | 7 | Spotlight box: drag-and-drop an image file to use instead of a capture | `desktop/clarity/ui/spotlight/` | FRD §5 |
-| 8 | `docker/README.md` + `samples/README.md` polish; a `make smoke` target that runs the container smoke test | `docker/`, `samples/` | SETUP §6 |
-| 9 | Coordinator structured logging with `request_id` and `job_id` on every line | `server/` | API.md §1 |
+| 8 | LangSmith tracing wired for all three graphs; a `make trace` that opens the last job's trace | `agent/` | FRD §10.1 |
+| 9 | Explainer: a second critique dimension — factual sanity check of the explanation against the problem text | `agent/app/graphs/explainer/` | FRD §10.3 |
 | 10 | Menu bar icon reflects state (idle / working / done) with the assets in `desktop/assets/` | `desktop/clarity/app.py` | FRD §5 |
 
 ---
@@ -101,13 +101,16 @@ Run together at the end of each sprint, after the merge. Each line names who dem
 1. **P4 + P3** — `⌘⇧E` → drag → spotlight box → Enter → **real explanation in the result box in under 10 s.**
 2. **P1** — `snippets_verified ≥ 20`; `/snippets/search` ranks a plotting query and an array-walk query correctly. Determinism decision recorded.
 3. **P2** — `Render()` renders every sample through a real container; `go test ./internal/render/` passes; timeout kills the container.
+3b. **P3** — `POST /internal/render` renders a sample source (`FAKE_RENDER` off if P2's `Render` is in; on otherwise). P1 needs it next sprint.
+3c. **P1** — `/explain` is a LangGraph graph: force a bad draft, see `revisions: 1`.
 4. **P3** — Same capture twice → second is `cached: true` with explanation and video.
 5. **Captain (P1)** merges, tags `sprint-2`.
 
 ### Sprint 3
 1. **All** — One capture → explanation → **real video playing in the result box.** No fakes anywhere.
-2. **P1 + P3** — Every codegen call in that job included ≥ 1 retrieved snippet (logs). Ablation numbers recorded.
-3. **P2 + P3** — Inject a bad import into one scene → that scene drops, the other scenes' video still plays.
+2. **P1** — `/scenes/render` graph: retrieve → generate → lint → render → ingest, all real; point it at the fake coordinator and watch the repair edge fire (`attempts: 2`). Ablation numbers recorded. A `generated` snippet is in Atlas.
+3. **P1 + P3** — Force one scene to `ok: false` → that scene drops, the other scenes' video still plays.
+3b. **P2** — `validate.go` rejects an empty-`construct` clip; `make smoke` passes.
 4. **P4** — With the server stopped, ↓ in the spotlight box lists a recent and Enter reopens its result from local data. X before `done` → P3 sees `cancelled`.
 5. **Captain (P2)** merges, tags `sprint-3`.
 
@@ -152,6 +155,6 @@ Everyone works until the end of the sprint on their own branch, then everyone's 
 |---|---|---|
 | 1 | Nobody needs anybody. | — |
 | 2 | P3 needs P1's real `/vision` + `/explain`. P1 needs P2's first samples to seed. P4 needs P3's server (fake mode is enough until the last step). | P3 keeps `FAKE_AGENT=1`; P1 seeds from the smoke-test scene; P4 stays on fake mode. |
-| 3 | P3 needs P2's three functions and P1's `/codegen`. P2 needs P1's `/codegen` to test repair for real. | P3 keeps `FAKE_RENDER=1`; P2 tests repair with a fake codegen (broken sample, then good). |
+| 3 | P1's agent needs P3's `/internal/render` (shipped end of Sprint 2). P3 needs P1's `/scenes/render` and P2's `Render`/`Concat`. | P1 uses `agent/dev/fake_coordinator.py`; P3 keeps `FAKE_RENDER=1` inside `/internal/render` until P2's `Render` lands. |
 | 4 | P1's snippet review needs P2 to render clips. P3's two-machine test needs a second laptop. P3's PKG needs P4's `.app` (P4 Sprint 4 Step 2, early in the sprint). | P3 builds the PKG against a `.app` built with the SETUP §11.2 command on their own machine. |
 | 5 | Everyone needs `main` green. P3's publish needs P4's final `.dmg`. | Fix forward; nobody branches. |

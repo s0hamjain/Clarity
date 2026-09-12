@@ -8,7 +8,7 @@ Clarity is four programs plus a few services, all running on your Mac:
 
 | You'll run… | Which is… | From |
 |---|---|---|
-| The **agent service** | Python server that calls Claude | §8 |
+| The **agent service** | Python server running three LangGraph agents (Gemini + Claude Sonnet) | §8 |
 | The **coordinator** | Go server the desktop app talks to | §9 |
 | The **desktop app** | The menu-bar app itself | §10 |
 | **Docker** with the `manim-worker` image | Sandbox every animation renders inside | §6 |
@@ -268,7 +268,8 @@ Console: http://localhost:9001 (minioadmin / minioadmin).
 ```sh
 cd agent
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt     # google-genai anthropic fastapi uvicorn pydantic voyageai pymongo python-dotenv
+pip install -r requirements.txt     # langgraph langchain-core langchain-google-genai langchain-anthropic langchain-mongodb
+                                    #   langchain-voyageai fastapi uvicorn pydantic pydantic-settings pymongo python-dotenv
 cp .env.example .env                 # fill in §12 values
 ```
 
@@ -284,7 +285,7 @@ python scripts/seed_snippets.py                     # embeds and upserts every s
 ```sh
 uvicorn app.main:app --port 8000 --reload
 curl localhost:8000/healthz
-# → {"ok":true,"gemini":true,"anthropic":true,"voyage":true,"atlas":true,"snippets_verified":N,...}
+# → {"ok":true,"gemini":true,"anthropic":true,"voyage":true,"atlas":true,"coordinator":…,"snippets_verified":N,"graphs":["intake","explainer","manim_generator"],...}
 ```
 
 ---
@@ -403,6 +404,10 @@ EMBED_MODEL=voyage-code-3
 VISION_MODEL=gemini-3.8-flash
 EXPLAIN_MODEL=gemini-3.8-flash
 CODEGEN_MODEL=claude-sonnet-5
+COORDINATOR_URL=http://localhost:8080
+# optional — trace every graph run in LangSmith
+# LANGSMITH_TRACING=true
+# LANGSMITH_API_KEY=lsv2_...
 ```
 
 ### 12.2 `server/.env`

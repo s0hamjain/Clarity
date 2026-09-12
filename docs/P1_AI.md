@@ -1,29 +1,27 @@
-# Clarity — P1: AI (Agent Service)
+# Clarity — P1: AI (Agents)
 
-**You are P1. Your job in one sentence:** build the Python service that makes every call to an AI model and returns exact JSON — read the problem off a screenshot and write the explanation and animation plan (Gemini Flash), find example code, write the Manim code and fix it when it crashes (Claude Sonnet 5).
+**You are P1. Your job in one sentence:** build the Python service where every model call happens — as **LangGraph agents**, with **LangChain** for prompts and structured output, **Pydantic** for every data shape, and a **MongoDB Atlas vector store** that the Manim generator retrieves from and feeds back into.
 
-You are the only person who talks to any AI model. Nobody else writes a prompt. Nobody else imports `google.genai` or `anthropic`.
+You are the only person who talks to any AI model. Nobody else writes a prompt. Nobody else imports `langchain`, `langgraph`, `google.genai`, or `anthropic`.
 
-| Task | Model | Why |
-|---|---|---|
-| `/vision` — OCR the screenshot | **Gemini 3.8 Flash** `gemini-3.8-flash` | Strong vision, fast, cheap, and accepts `temperature=0` — which the cache needs |
-| `/explain` — explanation + storyboard | **Gemini 3.8 Flash** `gemini-3.8-flash` | Good enough reasoning at a fraction of the cost; one call per job |
-| `/codegen` — Manim code + repair | **Claude Sonnet 5** `claude-sonnet-5` | The one place a code-specialist model earns its cost: 2–5 calls per job plus repairs, and every failed render costs 90 s of CPU |
+| Graph | Endpoint | What it does | Model |
+|---|---|---|---|
+| **Intake** (chain) | `/vision` | Reads the problem off the screenshot, verbatim | Gemini 3.8 Flash, `temperature=0` |
+| **Explainer** (agent) | `/explain` | Drafts the explanation + storyboard, critiques it against the rules, revises once if needed | Gemini 3.8 Flash |
+| **Manim Generator** (agent) | `/scenes/render` | For one scene: retrieve examples from Atlas → write Manim (Sonnet) → lint → render via the coordinator → repair up to 3× → ingest the working source back into Atlas | Claude Sonnet 5 for code; Gemini nowhere near code |
 
-**Cost policy: no Opus-tier models, anywhere.** Gemini Flash by default. If the Sprint 3 ablation shows Gemini writes Manim as well as Sonnet, switch `/codegen` too.
+**Cost policy: no Opus-tier models, anywhere.** Gemini Flash by default. Sonnet only in the `generate` node.
 
 ---
 
 ## Your job in plain words
 
-1. **Transcribe.** Given a screenshot, return the problem text *word for word* plus a category (`math` / `algorithm` / `unknown`).
-2. **Explain and plan.** Given problem text and the user's question, return a step-by-step markdown explanation and a **storyboard**: 2–5 short scenes describing what an animation should show.
-3. **Find examples.** Given one scene, find the 3 most similar verified Manim examples from a library in MongoDB Atlas (vector search). This is the RAG part.
-4. **Write code.** Given one scene plus those examples, return complete runnable Manim code with `class GeneratedScene(Scene)`.
-5. **Fix code.** Given the code that crashed plus its traceback, return fixed code.
-6. **Keep the library.** Seed it from `samples/*.py`, ingest new examples from successful renders as *unverified*, let a human promote them.
+1. **Transcribe.** Screenshot in → problem text *word for word* + category (`math` / `algorithm` / `unknown`). One chain, no loop.
+2. **Explain and plan, then check your own work.** Problem + question in → markdown explanation + a 2–5 scene **storyboard**. A second model call grades the draft against the rules (visual not algebraic, lengths, guardrails); if it fails, one revision.
+3. **Generate the animation code — and own the loop.** For one scene: find the 3 most similar verified Manim examples in Atlas (vector search), write code imitating them, lint it, hand it to the coordinator to render in Docker, and if it crashes, retrieve again with the error as a hint, fix, re-render. Three tries. On success, store the code in Atlas as an unverified example so the corpus grows.
+4. **Keep the library.** Seed it from P2's `samples/*.py`; expose list/get/promote/delete so a human can review what the agent added.
 
-Everything you return is schema-enforced JSON — Claude's **structured outputs** (`output_config.format`) and Gemini's **`response_schema`** — never prose you have to parse.
+Everything in and out of every node is a Pydantic model. Nothing is a `dict`.
 
 ---
 
@@ -31,32 +29,31 @@ Everything you return is schema-enforced JSON — Claude's **structured outputs*
 
 | You own | You never touch |
 |---|---|
-| `agent/**` — the whole directory | Any Go (`server/`) |
-| Every prompt | The Dockerfile, `samples/*.py` content (P2 writes those — you only *read* them) |
-| The Gemini, Claude, Voyage, and Atlas clients | Anything in `desktop/` |
+| `agent/**` — the whole directory | Any Go (`server/`) — you *call* `POST /internal/render`, you don't implement it |
+| Every prompt, every graph, every node | The Dockerfile, `samples/*.py` content (P2 writes those — you only *read* them) |
+| The Gemini, Claude, Voyage, and Atlas clients; the `MongoDBAtlasVectorSearch` instance | Anything in `desktop/` |
 | The `manim_snippets` collection and its vector index | The `jobs` and `cache` collections (P3's) |
-| `agent/scripts/` and `agent/experiments/` | |
 | One exception: the one-line `PromptVersion` bump in `server/internal/cache/key.go` whenever you change a prompt | |
 
 ---
 
 ## Where your work meets others
 
-You **implement** these; P3's coordinator **calls** them. The exact request/response for each is in **[API.md §3](API.md#3-agent-service-api)**. Copy the shapes; don't invent fields.
+You **implement** these; P3's coordinator **calls** them. Exact shapes in **[API.md §3](API.md#3-agent-service-api)** — copy them, don't invent fields.
 
-| Endpoint | What P3 sends you | What you return |
+| Endpoint | P3 sends | You return |
 |---|---|---|
 | `POST /vision` | base64 image | `{problem_text, category, confidence}` |
-| `POST /explain` | problem text, question, guardrails flag | `{explanation, storyboard{title, scenes[]}}` |
-| `POST /snippets/search` | one scene, category, k, optional traceback hint | `{snippets[]}` |
-| `POST /codegen` | one scene, snippets, optional previous source + traceback | `{manim_source, scene_class}` |
-| `POST /snippets/ingest` | a new snippet | `{id, embedded}` |
-| `GET/PATCH/DELETE /snippets…` | corpus management | see API.md §3.6–3.9 |
-| `GET /healthz` | — | `{ok, anthropic, voyage, atlas, snippets_verified, …}` |
+| `POST /explain` | problem text, question, guardrails | `{explanation, storyboard, revisions}` |
+| `POST /scenes/render` | one scene, `work_dir`, `quality`, `job_id` | `{ok: true, clip_path, attempts, …}` or `{ok: false, attempts, stage, last_traceback}` |
+| `POST /snippets/ingest`, `GET/PATCH/DELETE /snippets…` | corpus management | see API.md §3.6–3.10 |
+| `GET /healthz` | — | `{ok, gemini, anthropic, voyage, atlas, coordinator, snippets_verified, graphs, …}` |
 
-You **read** one thing P2 produces: `samples/*.py` files with a docstring header (FRD §13). Your seed script parses that header.
+You **call** one thing P3 implements: **`POST <COORDINATOR_URL>/internal/render`** — `{source, work_dir, quality}` → `{ok, clip_path}` or `{ok: false, stage, traceback}` (API.md §2.7). That's your agent's render tool.
 
-**Nobody is waiting on you to start.** You're a leaf: test everything with `curl` and a PNG.
+You **read** one thing P2 produces: `samples/*.py` files with a docstring header (FRD §13). Your seed script parses it.
+
+**You are not blocked on anyone.** `/vision` and `/explain` are leaves. `/scenes/render` needs `/internal/render` — until P3 has it (Sprint 2), point `COORDINATOR_URL` at a 15-line stub that returns `{ok: true, clip_path: "<work_dir>/fake.mp4"}` on the first call and a fake traceback on demand so you can exercise the repair edge.
 
 ---
 
@@ -67,12 +64,15 @@ Follow [SETUP.md](SETUP.md) §1, §3, §4, §5, §8. You need:
 - `GEMINI_API_KEY` — SETUP §3.1
 - `ANTHROPIC_API_KEY` — SETUP §3.2
 - `VOYAGE_API_KEY` — SETUP §4
-- `MONGODB_URI` — SETUP §5 (one person creates the cluster; get the string from them, or create it yourself if you're first)
-- Python 3.12 venv in `agent/` with `google-genai anthropic fastapi uvicorn pydantic pydantic-settings voyageai pymongo python-dotenv`
+- `MONGODB_URI` — SETUP §5 (one person creates the cluster; get the string from them, or create it if you're first)
+- Python 3.12 venv in `agent/` with:
+  `langgraph langchain-core langchain-google-genai langchain-anthropic langchain-mongodb langchain-voyageai fastapi uvicorn pydantic pydantic-settings pymongo python-dotenv`
 
 Verify: all four sanity checks in SETUP §3–§5 print what they should.
 
-Read once: **FRD §10** (your endpoints in context), **FRD §13** (RAG design), **FRD §9.3** (the snippet document and vector index), **API.md §3**, and **FRD §23 rules 1–6** (yours).
+Read once: **FRD §10** (your architecture — the whole section), **FRD §13** (corpus design), **FRD §9.3** (snippet document + vector index), **API.md §3** and **§2.7**, **FRD §23 rules 1–6**.
+
+If LangGraph is new to you: the 20-minute version is *a graph has a state model, nodes are functions `(state) -> partial update`, edges say which node runs next, conditional edges are functions `(state) -> node name`.* That's all you use here.
 
 ---
 
@@ -83,27 +83,42 @@ agent/
 ├── .env / .env.example
 ├── requirements.txt
 ├── app/
-│   ├── main.py                 # FastAPI app, routers, /healthz
-│   ├── config.py               # pydantic-settings reading .env
-│   ├── schemas.py              # Pydantic models = API.md §3 shapes, exactly
-│   ├── clients/gemini.py       # google-genai client; response_schema helper — /vision (temperature=0) and /explain
-│   ├── clients/claude.py       # anthropic.Anthropic(); stream helper (Sonnet 5, /codegen only)
-│   ├── clients/embed.py        # voyageai embed(texts, model, input_type)
-│   ├── clients/atlas.py        # pymongo client, collection handles, $vectorSearch helper
-│   ├── routers/vision.py
-│   ├── routers/explain.py
-│   ├── routers/snippets.py     # search, ingest, list, get, patch, delete
-│   ├── routers/codegen.py
+│   ├── main.py                        # FastAPI; one route per graph; /healthz
+│   ├── config.py                      # pydantic-settings: keys, MONGODB_*, COORDINATOR_URL, model IDs, LANGSMITH_*
+│   ├── schemas.py                     # API request/response models = API.md §3, exactly
+│   ├── llm.py                         # gemini_flash(), gemini_flash_deterministic(), sonnet() — LangChain chat models
+│   ├── prompts.py                     # load_prompt(name) → ChatPromptTemplate from prompts/*.md
+│   ├── vectorstore.py                 # the ONE MongoDBAtlasVectorSearch instance + VoyageAIEmbeddings; retriever factory
+│   ├── graphs/
+│   │   ├── intake/
+│   │   │   └── chain.py               # vision_prompt | gemini_flash_deterministic.with_structured_output(VisionResponse)
+│   │   ├── explainer/
+│   │   │   ├── state.py               # ExplainerState(BaseModel)
+│   │   │   ├── nodes.py               # draft, critique, revise
+│   │   │   └── graph.py               # StateGraph wiring + conditional edge
+│   │   └── manim_generator/
+│   │       ├── state.py               # SceneState(BaseModel)
+│   │       ├── nodes.py               # retrieve, generate, lint, render, ingest
+│   │       ├── lint.py                # ast checks, banned imports, class name, literal-coordinate heuristics
+│   │       ├── tools.py               # render_tool(): POST /internal/render
+│   │       └── graph.py               # StateGraph wiring; two bounded loops
+│   ├── routers/
+│   │   ├── vision.py                  # POST /vision      → intake chain
+│   │   ├── explain.py                 # POST /explain     → explainer graph
+│   │   ├── scenes.py                  # POST /scenes/render → manim_generator graph
+│   │   ├── snippets.py                # ingest / list / get / patch / delete + debug /snippets/search
+│   │   └── debug.py                   # POST /codegen — runs the generate node alone
 │   └── prompts/
 │       ├── vision.md
 │       ├── explain_math.md
 │       ├── explain_algorithm.md
 │       ├── explain_guardrails.md
+│       ├── critique.md
 │       ├── codegen.md
 │       └── repair.md
 ├── scripts/
-│   ├── seed_snippets.py        # samples/*.py → embed → upsert; --create-index
-│   └── promote_snippet.py      # PATCH /snippets/{id} {"verified": true}
+│   ├── seed_snippets.py               # samples/*.py → vectorstore.add_documents; --create-index
+│   └── promote_snippet.py             # PATCH /snippets/{id} {"verified": true}
 └── experiments/
     ├── cache_collision.py
     └── retrieval_ablation.py
@@ -111,135 +126,176 @@ agent/
 
 ---
 
-## Sprint 1 — Skeleton, clients, real `/vision`, collision experiment
+## Sprint 1 — Skeleton, clients, Intake chain, collision experiment
 
 (Budget: ~3 h.)
 
-**Goal:** the service runs, `/healthz` proves all three external services are reachable, one real transcription works, and you know how often the same problem transcribes identically.
+**Goal:** the service runs; `/healthz` proves Gemini, Anthropic, Voyage, Atlas are reachable; `/vision` works for real as a LangChain chain; you know how often the same problem transcribes identically.
 
-### Step 1 — Skeleton (45 min)
-- `app/main.py`: FastAPI app. Mount routers. No CORS (only the coordinator calls you).
-- `app/config.py`: `pydantic_settings.BaseSettings` with `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, `MONGODB_DB="clarity"`, `EMBED_MODEL="voyage-code-3"`, `VISION_MODEL="gemini-3.8-flash"`, `EXPLAIN_MODEL="gemini-3.8-flash"`, `CODEGEN_MODEL="claude-sonnet-5"`; plus `GEMINI_API_KEY`.
-- `app/schemas.py`: one Pydantic model per request and response in **API.md §3**. Field names exact. These *are* the contract.
-- Every endpoint returns a valid hardcoded response so P3 can hit you today.
+### Step 1 — Skeleton + models (45 min)
+- `app/config.py`: `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, `MONGODB_DB="clarity"`, `COORDINATOR_URL="http://localhost:8080"`, `VISION_MODEL="gemini-3.8-flash"`, `EXPLAIN_MODEL="gemini-3.8-flash"`, `CODEGEN_MODEL="claude-sonnet-5"`, `EMBED_MODEL="voyage-code-3"`, optional `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`.
+- `app/schemas.py`: a Pydantic model for every request and response in API.md §3. Field names exact — these *are* the contract.
+- `app/llm.py`:
+  ```python
+  from langchain_google_genai import ChatGoogleGenerativeAI
+  from langchain_anthropic import ChatAnthropic
+  def gemini_flash(thinking="medium"):       return ChatGoogleGenerativeAI(model=cfg.EXPLAIN_MODEL, thinking_level=thinking)
+  def gemini_flash_deterministic():          return ChatGoogleGenerativeAI(model=cfg.VISION_MODEL, temperature=0, thinking_level="low")
+  def sonnet():                              return ChatAnthropic(model=cfg.CODEGEN_MODEL, max_tokens=16000, streaming=True)
+  ```
+  Never pass `temperature` to `ChatAnthropic`. Check the exact kwarg names against the installed `langchain-google-genai` version — thinking-level plumbing has moved between releases.
+- `app/prompts.py`: `load_prompt("vision")` reads `prompts/vision.md` and returns `ChatPromptTemplate.from_messages([("system", text)])` (or system + human when the file has a `---` separator). Cache the templates.
+- `app/main.py`: routes stubbed to return valid hardcoded responses so P3 can hit you today. `/healthz` pings all four services.
 
-### Step 2 — Clients (1 h)
-- `clients/gemini.py`: one `genai.Client()` (reads `GEMINI_API_KEY`). One helper `generate(model, contents, schema_model, temperature=None, thinking_level="medium")` that calls `client.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(temperature=temperature, response_mime_type="application/json", response_schema=schema_model, thinking_config=types.ThinkingConfig(thinking_level=thinking_level)))` and returns `schema_model.model_validate_json(response.text)`. `/vision` calls it with `[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt]`, `temperature=0`, `thinking_level="low"`. `/explain` calls it with the text prompt, default temperature, `thinking_level="medium"`.
-- `clients/claude.py`: one `anthropic.Anthropic()`. `structured_stream(model, prompt, schema_model)` uses `messages.stream()` + `get_final_message()` with `output_config={"format": ...}` built from the Pydantic model's JSON schema — used with `CODEGEN_MODEL` (Sonnet 5) only. **Never** pass `temperature`; **never** use assistant prefill — both are 400s on Sonnet 5.
-- `clients/embed.py`: `voyageai.Client().embed(texts, model=EMBED_MODEL, input_type="document"|"query").embeddings`.
-- `clients/atlas.py`: `MongoClient(MONGODB_URI)[MONGODB_DB]`; handles for `manim_snippets`.
-- `/healthz`: ping all four (Gemini, Anthropic, Voyage, Atlas); report `snippets_verified` = count of `{verified: true}` and the four model IDs.
+### Step 2 — Vector store (30 min)
+- `app/vectorstore.py`: **one** `MongoDBAtlasVectorSearch(collection=db.manim_snippets, embedding=VoyageAIEmbeddings(model=cfg.EMBED_MODEL), index_name="snippets_vector", text_key="page_content", embedding_key="embedding")`. The `page_content` you embed is `title + "\n" + description + "\n" + " ".join(tags)` — **not** the source; queries are prose, so index prose. Source, title, category, tags, origin, verified live in metadata.
+- `retriever(category)` → `store.as_retriever(search_kwargs={"k": 3, "pre_filter": {"verified": True, "category": {"$in": [category, "general"]}}})`.
+- `--create-index` in the seed script creates `snippets_vector` exactly as FRD §9.3 (1024 dims, cosine, filter fields `verified`, `category`) via `store.create_vector_search_index(dimensions=1024, filters=["verified","category"])` (or the raw `create_search_index` if the helper isn't available in your version).
 
-### Step 3 — Real `/vision` on Gemini (45 min)
-- `prompts/vision.md`: transcribe the problem **verbatim**. No interpretation, no "the problem asks…", no summary. If there is no problem on screen, `category: "unknown"`, `problem_text: ""`.
-- Gemini 3.8 Flash, `temperature=0`, thinking `low`, `response_schema=VisionResponse` — this is transcription, not reasoning. Decode the base64 P3 sends you into bytes for the image `Part`.
-- Test: `curl` a real screenshot (SETUP §… curl cookbook in API.md §8). Compare the output to the image by eye. It should be character-for-character.
+### Step 3 — Intake chain, for real (45 min)
+- `graphs/intake/chain.py`: `chain = load_prompt("vision") | gemini_flash_deterministic().with_structured_output(VisionResponse)`. The image goes in as an inline image content block on the human message (`{"type": "image", "base64": ..., "mime_type": ...}` in LangChain's content-block format).
+- `prompts/vision.md`: transcribe the problem **verbatim**. No interpretation, no "the problem asks…", no summary. Preserve line breaks as shown. No problem on screen → `category: "unknown"`, `problem_text: ""`.
+- Test with a real screenshot via `curl` (API.md §8). Compare to the image character by character.
 
 ### Step 4 — Collision experiment (45 min)
-- `experiments/cache_collision.py`: take **six** screenshots of one problem (two zoom levels × three crop widths — do this by hand with `screencapture -i`), run each through `/vision`, apply `normalize()` (lowercase, trim, collapse whitespace — reimplement exactly as FRD §12), print the number of **distinct** strings.
-- Write the number in your PR description. It decides Sprint 2 Step 5.
+- `experiments/cache_collision.py`: six screenshots of one problem (two zoom levels × three crop widths — take them by hand with `screencapture -i`), each through `/vision`, then `normalize()` reimplemented exactly as FRD §12, count distinct strings. Put the number in your PR description.
 
 ### Done when
-- [ ] `uvicorn app.main:app --port 8000` starts; `curl localhost:8000/healthz` → `gemini`, `anthropic`, `voyage`, `atlas` all `true`.
-- [ ] `/vision` on a real screenshot returns verbatim text and the right category.
+- [ ] `uvicorn app.main:app --port 8000` runs; `/healthz` → `gemini`, `anthropic`, `voyage`, `atlas` all `true`.
+- [ ] `/vision` returns verbatim text and the right category for a real screenshot.
+- [ ] `snippets_vector` exists in Atlas (Active).
 - [ ] Every other endpoint returns a schema-valid hardcoded response.
 - [ ] Collision number recorded: **N distinct out of 6**.
 
 ---
 
-## Sprint 2 — `/explain`, the snippet library, `/snippets/search`, determinism decision
+## Sprint 2 — Explainer agent, seeded corpus, corpus endpoints
 
 (Budget: ~4.75 h.)
 
-**Goal:** a real explanation and storyboard come back; the library is seeded from P2's samples and searchable by meaning.
+**Goal:** `/explain` is a real LangGraph agent with a critique loop; the corpus is seeded from P2's samples and searchable; the corpus endpoints work.
 
-### Step 1 — `/explain` on Gemini 3.8 Flash (1.5 h)
-- `EXPLAIN_MODEL` = `gemini-3.8-flash` via `gemini.generate(...)`, `response_schema=ExplainResponse`, thinking `medium`.
-- Prompts: `explain_math.md`, `explain_algorithm.md`, chosen by `category`. When `guardrails: true`, append `explain_guardrails.md`: teach the method, work the setup, **stop before the final answer** (math: leave the final substitution; code: give a skeleton with decision points named, never a complete solution).
-- 2–5 scenes. `narration` ≤ 90 chars. `visual` in relative terms ("below", "next to"), never coordinates.
-- The storyboard rule, in the prompt as a rule *and* as a bad/good example pair: **every scene must show something text can't** — a function and its derivative plotted together, a pointer walking an array, a shape transforming. A scene that just restates algebra gets cut.
+### Step 1 — Explainer graph (2 h)
+- `graphs/explainer/state.py`:
+  ```python
+  class ExplainerState(BaseModel):
+      problem_text: str; category: str; user_prompt: str; guardrails: bool
+      draft: ExplainDraft | None = None
+      critique: Critique | None = None
+      revisions: int = 0
+  ```
+- `nodes.py`:
+  - `draft`: prompt = `explain_math.md` or `explain_algorithm.md` by category, + `explain_guardrails.md` appended when `guardrails`. `gemini_flash().with_structured_output(ExplainDraft)`. The storyboard rule goes in the prompt as a rule **and** as a bad/good scene pair: *every scene shows something text can't* — a plotted function, a pointer walking an array, a shape transforming. Algebra restated is cut.
+  - `critique`: first, Python checks the hard rules (2–5 scenes, `narration` ≤ 90, `duration_seconds` 5–15) — if any fail, build a `Critique(passed=False, issues=[...])` without a model call. Otherwise `gemini_flash("low").with_structured_output(Critique)` with `critique.md`: does each scene describe motion or a plot rather than algebra? relative positioning language only? if guardrails, is the final answer truly absent?
+  - `revise`: same as `draft` with the issues appended; `revisions += 1`.
+- `graph.py`: `draft → critique →` conditional: `passed` → END; `not passed and revisions < 1` → `revise → critique`; else → END (log `explainer.gave_up`). Compile once at import.
+- Router builds `ExplainerState`, runs `graph.invoke(state, config={"configurable": {"thread_id": job_id}})`, returns `ExplainResponse(explanation=..., storyboard=..., revisions=...)`.
 
-### Step 2 — Seed script + vector index (1 h)
-- `scripts/seed_snippets.py`: for each `samples/*.py`, parse the docstring header (`title:`, `description:`, `category:`, `tags:` — FRD §13), read the source, embed **`title + "\n" + description + "\n" + " ".join(tags)`** (not the code — queries are prose, so index prose) with `input_type="document"`, upsert by `title` into `manim_snippets` with `verified: true, origin: "seed"`.
-- `--create-index` creates the Atlas Vector Search index `snippets_vector` exactly as **FRD §9.3** (1024 dims, cosine, filters on `verified` and `category`) via `create_search_index`. Idempotent — safe to re-run.
-- P2 will have 5 samples by end of Sprint 1 and 20 by end of Sprint 2. Seed whatever exists; re-run as more land.
+### Step 2 — Seed script (45 min)
+- `scripts/seed_snippets.py`: parse each `samples/*.py` docstring header (`title:`, `description:`, `category:`, `tags:` — FRD §13), read the source, build a LangChain `Document(page_content=title+"\n"+description+"\n"+tags, metadata={title, description, category, tags, source, origin:"seed", verified:True, created_at})`, `store.add_documents(docs, ids=[slug(title)])` — ids make it idempotent. `--create-index` as in Sprint 1.
+- P2 has 5 samples by end of Sprint 1, 20 by end of Sprint 2. Seed whatever exists; re-run as more land.
 
-### Step 3 — `/snippets/search` (1 h)
-- Embed `narration + " " + visual` (+ `" " + hint` if present) with `input_type="query"`.
-- `$vectorSearch` on `snippets_vector`: `numCandidates: 50`, `limit: k`, filter `{verified: true, category: {$in: [category, "general"]}}`. Project `score: {$meta: "vectorSearchScore"}`.
-- Test: a query about *plotting a derivative* returns a plotting seed above an array-walk seed. Swap the query; the ranking flips.
-
-### Step 4 — `/snippets/ingest` + corpus management (1 h)
-- `POST /snippets/ingest`: embed, insert. `verified` defaults `false`. Return `409` if the same `source` exists.
-- `GET /snippets` (filter `verified`, `origin`; paginate), `GET /snippets/{id}`, `PATCH /snippets/{id}` (re-embed if title/description/tags change), `DELETE /snippets/{id}`. API.md §3.6–3.9.
+### Step 3 — Corpus endpoints + debug retrieve (1 h)
+- `POST /snippets/ingest`: build a `Document`, `add_documents`; `verified` defaults `false`; `409` if identical `source` exists (check first).
+- `GET /snippets` (filter `verified`, `origin`; paginate), `GET /snippets/{id}`, `PATCH /snippets/{id}` (re-embed if title/description/tags change — delete + add), `DELETE /snippets/{id}`. These use `pymongo` directly on the same collection for the non-vector operations.
+- `POST /snippets/search` (debug): runs `retriever(category).invoke(query)`; returns snippets with `score` from `similarity_search_with_score`.
 - `scripts/promote_snippet.py <id>` = `PATCH {"verified": true}`.
+- Test: a query about *plotting a derivative* returns a plotting seed above an array-walk seed; swap the query, the ranking flips.
 
-### Step 5 — Check determinism (15 min)
-- If Sprint 1's number was **≥ 4 of 6 identical**: Gemini at `temperature=0` is doing its job. Done.
-- If not: the fix is in the prompt or in `normalize()`, not the model — tighten the transcription instructions (e.g. "preserve line breaks exactly as shown" vs "join wrapped lines") and re-run. Record the new number. If it's still bad, raise it at the sync point.
+### Step 4 — Determinism check (15 min)
+- Sprint 1 number **≥ 4 of 6 identical** → Gemini at `temperature=0` is doing its job. Done.
+- If not: the fix is the prompt or `normalize()`, not the model. Tighten (e.g. "preserve line breaks exactly" vs "join wrapped lines"), re-run, record.
+
+### Step 5 — Coordinator stub for Sprint 3 (15 min)
+- `agent/dev/fake_coordinator.py`: `POST /internal/render` → first call `{"ok": false, "stage": "render", "traceback": "NameError: name 'RIGHT_ARROW' is not defined"}`, second call `{"ok": true, "clip_path": "<work_dir>/fake.mp4"}`. So you can watch the repair edge fire before P3's real endpoint exists.
 
 ### Done when
-- [ ] `/explain` returns a real explanation and a 2–5 scene storyboard for a real problem; guardrails variant withholds the answer on one test problem.
-- [ ] `/healthz` shows `snippets_verified ≥ 20` (or however many samples P2 has shipped).
+- [ ] `/explain` returns a real explanation and storyboard; force a bad draft (e.g. a prompt that produces 7 scenes) and watch `revisions: 1` and the fix.
+- [ ] Guardrails variant withholds the final answer on one test problem.
+- [ ] `/healthz` shows `snippets_verified ≥ 20` (or as many as P2 has shipped).
 - [ ] `/snippets/search` ranks correctly for a plotting query and an array-walk query.
 - [ ] Ingest, list, get, patch, delete all work via `curl`.
 - [ ] Determinism decision written down.
 
 ---
 
-## Sprint 3 — `/codegen` with retrieved examples, repair, measure it
+## Sprint 3 — Manim Generator agent
 
 (Budget: ~3.25 h.)
 
-**Goal:** real Manim code comes back for every scene, grounded in retrieved snippets; crashes get repaired; you can show retrieval helps.
+**Goal:** `/scenes/render` runs the full retrieve → generate → lint → render → repair → ingest loop against P3's real `/internal/render`, and you can show retrieval helps.
 
-### Step 1 — `/codegen` on Claude Sonnet 5 (1.5 h)
-- Model is `CODEGEN_MODEL` = `claude-sonnet-5`, via the streaming helper. Same for repair.
-- `prompts/codegen.md` contains, in this order: the hard constraints (FRD §10.4 — `from manim import *` only, relative positioning only, never literal coordinates, never set resolution/fps, `narration` → `Text(...).to_edge(DOWN)`, class name is always `GeneratedScene`); a section **"Reference — imitate these"** with the retrieved snippets pasted verbatim; the scene's `narration` and `visual`; the output schema.
-- **Assert before returning:** `scene_class == "GeneratedScene"` and `"class GeneratedScene(Scene)" in manim_source`. Otherwise raise → `422 schema_violation`. P3 counts that as a failed attempt.
+### Step 1 — State, lint, render tool (45 min)
+- `state.py`:
+  ```python
+  class SceneState(BaseModel):
+      job_id: str; scene: Scene; storyboard_title: str; category: str; guardrails: bool; work_dir: str; quality: str
+      snippets: list[Snippet] = []; hint: str = ""
+      source: str | None = None; traceback: str | None = None
+      attempts: int = 0; lint_retries: int = 0
+      clip_path: str | None = None; stage: str | None = None; snippet_id: str | None = None
+  ```
+- `lint.py`: `ast.parse`; only `manim`/stdlib imports; ban `os.system`, `subprocess`, `__import__`, `eval(`, `exec(`, `open(` with write modes; require `class GeneratedScene(Scene)`; flag literal-coordinate patterns (`np.array([`, `.move_to([`, `.shift([`). Returns `None` or a one-line reason.
+- `tools.py`: `render_tool(source, work_dir, quality) -> RenderResult` = `httpx.post(f"{COORDINATOR_URL}/internal/render", json=..., timeout=130)`. Map connection errors to `502 coordinator_unreachable`.
 
-### Step 2 — Repair (45 min)
-- When `previous_source` and `traceback` are present, use `prompts/repair.md`: *fix the minimal thing that caused this error; do not rewrite the scene.* Include the previous source and the **last 40 lines** of the traceback only.
+### Step 2 — Nodes and graph (1.5 h)
+- `retrieve`: `retriever(state.category).invoke(narration + " " + visual + (" " + hint if hint else ""))` → `snippets`.
+- `generate`: `sonnet().with_structured_output(ManimSource)`. Prompt = `codegen.md` (constraints from FRD §10.4 + "Reference — imitate these" with snippets verbatim + the scene) or `repair.md` when `traceback` is set (previous source + last 40 traceback lines; *fix the minimal thing, do not rewrite*). Assert `scene_class == "GeneratedScene"` — otherwise treat as a lint failure.
+- `lint`: run `lint.py`. Fail → `traceback = reason`, `lint_retries += 1`.
+- `render`: `render_tool(...)`; `attempts += 1`; success → `clip_path`; fail → `traceback`, `hint = first line`, `stage`.
+- `ingest`: `add_documents([Document(page_content=title+desc, metadata={source, origin:"generated", verified:False, ...})])` → `snippet_id`. Wrap in try/except; log on failure.
+- `graph.py`:
+  ```
+  retrieve → generate → lint →(ok)→ render →(ok)→ ingest → END
+                  ▲       └(fail, lint_retries<2)┘   └(fail, attempts<3)→ retrieve
+                  └────────(fail, lint_retries≥2 → count as an attempt, go to retrieve)
+                                                       (fail, attempts≥3)→ END
+  ```
+  Two counters, two caps. Log every transition with `job_id`, `scene.index`, `attempts`, `lint_retries`, and the traceback's first line — P2 and you will read these logs in Sprint 4.
+- Router builds `SceneState`, runs the graph with `thread_id=f"{job_id}/{scene.index}"`, returns `SceneRenderResponse` from the final state.
 
-### Step 3 — Retrieval ablation (1 h)
-- `experiments/retrieval_ablation.py`: 10 storyboard scenes (save them from real `/explain` calls). For each: `/codegen` with retrieved snippets and `/codegen` with `snippets: []`. Render both through P2's container (ask P2 for the command, or use `docker run manim-worker …` from SETUP §6.2). Count first-attempt successes in each arm. Write both numbers in the PR.
+### Step 3 — Debug `/codegen` + retrieval ablation (1 h)
+- `routers/debug.py`: `POST /codegen` runs the `generate` node alone on a caller-supplied scene + snippets. No lint, no render.
+- `experiments/retrieval_ablation.py`: 10 real storyboard scenes. For each, `/codegen` with retrieved snippets and with `snippets: []`; render both through P3's `/internal/render`; count first-attempt successes per arm. Record both numbers in the PR. If "without" ≈ "with", the corpus needs better coverage — tell P2 which scene types failed.
 
 ### Done when
-- [ ] `/codegen` returns runnable code for a real scene; the class name assertion fires on a deliberately bad prompt.
-- [ ] Repair path returns fixed code for a real traceback (get one from P2).
-- [ ] Ablation numbers recorded: with snippets **X/10**, without **Y/10**.
-- [ ] P3 confirms every codegen prompt in a real job contained ≥ 1 snippet (they'll check your logs — log the snippet titles per call).
+- [ ] `/scenes/render` against P3's real `/internal/render` returns `ok: true` with a `clip_path` for a real scene.
+- [ ] Inject a bad import into a generated source (a debug flag in `generate`) → lint catches it, `lint_retries` increments, the graph recovers.
+- [ ] Point at the fake coordinator → the render-fail edge fires, `retrieve` runs with a hint, second attempt succeeds, `attempts: 2`.
+- [ ] A new `origin: "generated", verified: false` snippet appears in Atlas after a success.
+- [ ] Ablation numbers recorded: with **X/10**, without **Y/10**.
 
 ---
 
-## Sprint 4 — Guardrails check, promote/delete generated snippets, tune prompts
+## Sprint 4 — Guardrails verification, corpus review, prompt tuning
 
 (Budget: ~3 h.)
 
-**Goal:** guardrails mode actually withholds answers; the library only contains examples worth imitating; recurring failures become prompt rules.
+**Goal:** guardrails mode actually withholds answers; the corpus only contains examples worth imitating; recurring failures become prompt rules or new samples.
 
-### Step 1 — Guardrails verification (1 h)
-- 5 math + 5 algorithm problems with `guardrails: true`. For each: does the explanation reveal the final answer? Does any scene? Record pass/fail. Tune `explain_guardrails.md` until **≥ 8/10** pass.
+### Step 1 — Guardrails check (1 h)
+- 5 math + 5 algorithm problems with `guardrails: true` through `/explain`. Does the explanation reveal the final answer? Does any scene? Record pass/fail. The `critique` node is your first line of defense — if it's passing drafts that leak, fix `critique.md` before `explain_guardrails.md`. Target **≥ 8/10**.
 
 ### Step 2 — Review generated snippets (1 h)
-- `GET /snippets?verified=false&origin=generated`. For each, ask P2 to render it (or run the container yourself) and **watch the clip**. Good → `promote_snippet.py`. Bad → `DELETE`. Write down *what made the bad ones bad* — overlapping text, off-frame objects, literal coordinates. Each recurring cause becomes a line in `codegen.md`.
+- `GET /snippets?verified=false&origin=generated`. P2 renders each (or you do via `/internal/render`); **watch the clip**. Good → `promote_snippet.py`. Bad → `DELETE`. Write down *why* the bad ones were bad — overlapping text, off-frame, literal coordinates. Each recurring cause becomes a `codegen.md` rule or a `lint.py` check.
 
-### Step 3 — Prompt tuning from real tracebacks (1 h)
-- Ask P3 for the repair tracebacks from Sprint 3. Group by error class. Each class becomes either a codegen constraint or a request to P2 for a seed snippet showing the right usage.
+### Step 3 — Prompt tuning from logs (1 h)
+- Pull the Sprint 3 logs: group tracebacks by error class. Each class → a `codegen.md` constraint, a `lint.py` heuristic, or a request to P2 for a seed sample showing the right API.
 - **Every prompt change → bump `PromptVersion`** in `server/internal/cache/key.go`. One-line commit, or tell P3.
 
 ### Done when
 - [ ] Guardrails pass rate recorded, ≥ 8/10.
-- [ ] Zero `verified: false, origin: generated` snippets left un-reviewed.
-- [ ] `PromptVersion` bumped; `codegen.md` has new rules from real failures.
+- [ ] Zero un-reviewed generated snippets.
+- [ ] `PromptVersion` bumped; `codegen.md` / `lint.py` carry rules from real failures.
 
 ---
 
 ## Sprint 5 — Freeze (Budget: ~1 h)
 
-- Final `PromptVersion` bump. **No prompt changes after this.**
-- Pre-warm the cache: run 4–5 representative problems end to end with P3 so they're instant.
-- Confirm `/healthz` all-green on a fresh boot.
+- Final `PromptVersion` bump. **No prompt or graph changes after this.**
+- Pre-warm the cache with P3: 4–5 representative problems end to end.
+- `/healthz` all-green on a fresh boot, `graphs` lists all three.
+- If you finish early, pull from the **Overflow backlog** in WORK_SPLIT.md.
 
 ---
 
@@ -248,9 +304,9 @@ agent/
 1. Start each sprint: `git checkout main && git pull && git checkout -b p1/sprint-N-<what>`.
 2. Commit small and often. Push whenever.
 3. **Before the sync point:** `git fetch origin && git rebase origin/main`, fix conflicts, run your own tests, push.
-4. **At the sync point:** the merge captain merges in order **P3 → P1 → P2 → P4**. You're second. Be ready to fix anything the checklist catches on your path.
-5. After the merge: back to step 1 for the next sprint.
-6. **Finished your sprint early?** Take the next item from the Overflow backlog in WORK_SPLIT.md — anyone can, regardless of role.
+4. **At the sync point:** merge order is **P3 → P1 → P2 → P4**. You're second. You're the merge captain in Sprint 2.
+5. After the merge: back to step 1.
+6. **Finished early?** Take the next Overflow item in WORK_SPLIT.md.
 
 Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 
@@ -258,23 +314,22 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 
 ## Your rules (never break these — FRD §23)
 
-1. Every response is schema-enforced JSON (Claude `output_config.format`; Gemini `response_schema`). Never parse prose for JSON. Never use assistant prefill; never pass `temperature` to a Claude model.
+1. Every model call goes through `.with_structured_output(PydanticModel)`. Never parse prose for JSON. Never assistant prefill. Never `temperature` on a Claude model.
 2. The `/vision` prompt contains **no** instruction to interpret, summarize, or contextualize. Verbatim only. That string is hashed.
-3. `/codegen` asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)`.
+3. Graph state, node inputs, node outputs, requests, responses: all Pydantic models. No `dict`, no `TypedDict`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
-5. Index and query use the same `EMBED_MODEL`. Changing it means recreating the index and re-seeding.
-6. `/vision` and `/explain` are Gemini 3.8 Flash (`/vision` at `temperature=0`). `/codegen` is Sonnet 5 via streaming. Model IDs come from config, never hardcoded in a router. **Never an Opus-tier model.**
+5. One `MongoDBAtlasVectorSearch` instance; seed, retrieve, and ingest all go through it. Index and query use the same `EMBED_MODEL`.
+6. Every loop in a graph has a counter in state and a hard cap. Intake: no loop. Explainer: ≤ 1 revision. Manim Generator: ≤ 3 render attempts, ≤ 2 lint retries per attempt. No Opus-tier model anywhere; Sonnet only in `generate`.
 
 ---
 
 ## Decisions that are yours
 
-- **Transcription prompt** — how verbatim is verbatim (line breaks, LaTeX vs Unicode math). Sprint 2 Step 5.
-- **Whether Sonnet stays on `/codegen`** — if the Sprint 3 ablation shows Gemini Flash renders first-try as often, drop Sonnet and the Anthropic dependency entirely.
-- **Embedding model** — `voyage-code-3` is the default; if prose-to-prose matching looks weak in Sprint 2, try `voyage-3.5` *before* the corpus is large (re-embedding is cheap now, expensive later).
-- **What "teach the method, not the answer" means** in the guardrails prompt.
-- **Storyboard bias** — the bad/good example pairs in `explain_*.md` that push toward motion over algebra.
+- **Whether Sonnet stays in `generate`** — if the Sprint 3 ablation shows Flash renders first-try as often, switch and drop the Anthropic dependency.
+- **The critique rubric** — what "shows something text can't" means concretely, and how strict guardrails checking is.
+- **Lint heuristics** — how aggressively to flag literal coordinates without false positives.
+- **Embedding model** — `voyage-code-3` default; if prose→prose matching looks weak in Sprint 2, try `voyage-3.5` *before* the corpus is large.
 
 ## If you're blocked
 
-You shouldn't be — you have no upstream dependencies. If `samples/` is empty when you want to seed, seed from the single smoke-test scene in SETUP §6.2 and re-run when P2 lands more.
+Sprints 1–2: nothing to wait for. Sprint 3: if P3's `/internal/render` isn't up, use `agent/dev/fake_coordinator.py` — the graph doesn't know the difference. If `samples/` is empty when you want to seed, seed from the SETUP §6.2 smoke-test scene and re-run when P2 lands more.

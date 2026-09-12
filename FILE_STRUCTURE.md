@@ -63,43 +63,58 @@ docker/
 agent/
 ├── .env                            # Never committed. See docs/SETUP.md §12.1
 ├── .env.example
-├── requirements.txt                # google-genai anthropic fastapi uvicorn pydantic pydantic-settings voyageai pymongo python-dotenv
+├── requirements.txt                # langgraph langchain-core langchain-google-genai langchain-anthropic langchain-mongodb
+│                                   #   langchain-voyageai fastapi uvicorn pydantic pydantic-settings pymongo python-dotenv
 │
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                     # FastAPI app; mounts routers; /healthz pings Anthropic, Voyage, Atlas
-│   ├── config.py                   # pydantic-settings: GEMINI_API_KEY, ANTHROPIC_API_KEY, VOYAGE_API_KEY, MONGODB_URI, MONGODB_DB,
-│   │                               #   EMBED_MODEL, VISION_MODEL (gemini-3.8-flash), EXPLAIN_MODEL (gemini-3.8-flash), CODEGEN_MODEL (claude-sonnet-5)
-│   ├── schemas.py                  # Pydantic models = FRD §10 shapes, exactly. These are the contract.
+│   ├── main.py                     # FastAPI; one route per graph; /healthz pings Gemini, Anthropic, Voyage, Atlas, coordinator
+│   ├── config.py                   # pydantic-settings: keys, MONGODB_URI/DB, COORDINATOR_URL, VISION/EXPLAIN/CODEGEN/EMBED_MODEL, LANGSMITH_*
+│   ├── schemas.py                  # API request/response models = API.md §3, exactly. These are the contract.
+│   ├── llm.py                      # gemini_flash(), gemini_flash_deterministic(), sonnet() — LangChain chat models
+│   ├── prompts.py                  # load_prompt(name) → ChatPromptTemplate from prompts/*.md (cached)
+│   ├── vectorstore.py              # the ONE MongoDBAtlasVectorSearch + VoyageAIEmbeddings; retriever(category)
 │   │
-│   ├── clients/
-│   │   ├── gemini.py               # google-genai client; response_schema helper — /vision (temperature=0) and /explain
-│   │   ├── claude.py               # One anthropic.Anthropic(); stream helper (Sonnet 5, /codegen only)
-│   │   ├── embed.py                # voyageai.Client().embed(...) with input_type document|query
-│   │   └── atlas.py                # pymongo client; collection handles; $vectorSearch helper
+│   ├── graphs/
+│   │   ├── intake/
+│   │   │   └── chain.py            # vision_prompt | gemini_flash_deterministic.with_structured_output(VisionResponse)
+│   │   ├── explainer/
+│   │   │   ├── state.py            # ExplainerState(BaseModel): draft, critique, revisions
+│   │   │   ├── nodes.py            # draft · critique (python hard-rules + Gemini rubric) · revise
+│   │   │   └── graph.py            # draft → critique →(fail, revisions<1)→ revise → critique ; else END
+│   │   └── manim_generator/
+│   │       ├── state.py            # SceneState(BaseModel): snippets, source, traceback, attempts, lint_retries, clip_path…
+│   │       ├── nodes.py            # retrieve · generate (Sonnet) · lint · render · ingest
+│   │       ├── lint.py             # ast.parse, banned imports/calls, class GeneratedScene, literal-coordinate heuristics
+│   │       ├── tools.py            # render_tool(): POST <COORDINATOR_URL>/internal/render
+│   │       └── graph.py            # retrieve → generate → lint ⇄ generate (≤2) → render ⇄ retrieve (≤3) → ingest → END
 │   │
 │   ├── routers/
-│   │   ├── vision.py               # POST /vision      — Gemini 3.8 Flash, temperature=0, verbatim transcription
-│   │   ├── explain.py              # POST /explain     — Gemini 3.8 Flash; explanation + 2–5 scene storyboard; guardrails variant
-│   │   ├── snippets.py             # POST /snippets/search, POST /snippets/ingest
-│   │   └── codegen.py              # POST /codegen     — Claude Sonnet 5; with snippets; repair when previous_source+traceback present
+│   │   ├── vision.py               # POST /vision          → intake chain
+│   │   ├── explain.py              # POST /explain         → explainer graph
+│   │   ├── scenes.py               # POST /scenes/render   → manim_generator graph
+│   │   ├── snippets.py             # POST /snippets/ingest · GET /snippets · GET/PATCH/DELETE /snippets/{id} · debug POST /snippets/search
+│   │   └── debug.py                # POST /codegen — runs the generate node alone
 │   │
 │   └── prompts/
 │       ├── vision.md
 │       ├── explain_math.md
 │       ├── explain_algorithm.md
-│       ├── explain_guardrails.md   # Appended when guardrails=true: teach the method, withhold the final answer
-│       ├── codegen.md              # Constraints (FRD §10.4) + "Reference — imitate these" + retrieved snippets
-│       └── repair.md               # Minimal fix, no rewrite; last 40 lines of traceback
+│       ├── explain_guardrails.md   # Appended when guardrails=true
+│       ├── critique.md             # The rubric the Explainer grades itself against
+│       ├── codegen.md              # Constraints + "Reference — imitate these" + scene
+│       └── repair.md               # Minimal fix, no rewrite; last 40 traceback lines
+│
+├── dev/
+│   └── fake_coordinator.py         # POST /internal/render: fail once with a traceback, then succeed — exercises the repair edge
 │
 ├── scripts/
-│   ├── seed_snippets.py            # Parse samples/*.py docstrings → embed → upsert verified=true origin=seed
-│   │                               #   --create-index creates snippets_vector (FRD §9.3). Idempotent.
-│   └── promote_snippet.py          # Flip one generated snippet to verified=true after a human watched it
+│   ├── seed_snippets.py            # samples/*.py docstrings → Documents → vectorstore.add_documents (ids = slug) ; --create-index
+│   └── promote_snippet.py          # PATCH /snippets/{id} {"verified": true}
 │
 └── experiments/
-    ├── cache_collision.py          # 6 captures of one problem → /vision → normalize → count distinct (Sprint 1)
-    └── retrieval_ablation.py       # 10 scenes, codegen with vs without snippets → first-attempt render rate (Sprint 3)
+    ├── cache_collision.py          # 6 captures → /vision → normalize → count distinct (Sprint 1)
+    └── retrieval_ablation.py       # 10 scenes, generate with vs without snippets → first-attempt render rate (Sprint 3)
 ```
 
 ---
@@ -119,7 +134,8 @@ server/
 │
 └── internal/
     ├── api/                        # P3
-    │   ├── handlers.go             # POST /api/jobs, GET /api/jobs/{id}, GET /healthz — FRD §11
+    │   ├── handlers.go             # POST /api/jobs, GET /api/jobs/{id}, DELETE, GET /api/cache/{hash}, GET /healthz — FRD §11
+    │   ├── internal_render.go      # POST /internal/render — localhost only; semaphore → precheck → render.Render() (agent's tool)
     │   └── cors.go                 # Access-Control-Allow-Origin: * on every route incl. 404/5xx
     │
     ├── store/                      # P3 · MongoDB Atlas
@@ -138,14 +154,13 @@ server/
     ├── jobs/                       # P3
     │   ├── job.go                  # Job struct = FRD §9.1; status enum
     │   ├── worker.go               # vision → hash → cache? → explain → write explanation → fan out → concat → upload → done
-    │   └── scenes.go               # Bounded fan-out over scenes; defer recover() per goroutine; scenes_done increments
+    │   └── scenes.go               # Per-scene work_dir + goroutine calling agent POST /scenes/render; defer recover(); scenes_done
     │
-    └── render/                     # P2 · the boundary with P3 is the three signatures in FRD §14.1
+    └── render/                     # P2 · the boundary with P3 is Render / Concat / Semaphore in FRD §14.1
         ├── precheck.go             # python ast.parse; banned imports/calls; requires class GeneratedScene(Scene)
-        ├── docker.go               # Render(): temp dir → docker run --network none … manim-worker → clip path | RenderError
-        ├── repair.go               # RenderWithRepair(): ≤3 attempts; retrieve → codegen → Render per attempt
-        ├── semaphore.go            # Buffered channel from RENDER_CONCURRENCY, held around docker run only
-        ├── validate.go             # Clip size floor; ffprobe duration
+        ├── docker.go               # Render(src, workDir, quality): docker run --network none … manim-worker → clip path | RenderError
+        ├── semaphore.go            # Buffered channel from RENDER_CONCURRENCY; P3 holds it around Render() in /internal/render
+        ├── validate.go             # ffprobe: duration, resolution/fps for the quality flag, size floor
         ├── concat.go               # Concat(): ffprobe param check → concat demuxer -c copy
         ├── s3.go                   # AWS SDK v2, S3_ENDPOINT override, path-style; upload renders/<hash>.mp4; public URL
         └── render_test.go          # Renders every samples/*.py through a real container
@@ -226,7 +241,8 @@ P4 builds the `.app` and `.dmg`; P3 packages and publishes them. The hand-off is
 | Rule | Detail |
 |---|---|
 | One path, one directory | `agent/` is P1, `docker/` + `samples/` + `server/internal/render/` are P2, the rest of `server/` + `release/` is P3, `desktop/` is P4. Touching another path's directory requires telling them first. |
-| `server/internal/render/` boundary | Three function signatures in FRD §14.1. P2 implements, P3 calls. Signature changes are agreed before either side edits. |
+| `server/internal/render/` boundary | `Render`, `Concat`, `Semaphore` in FRD §14.1. P2 implements, P3 calls from `/internal/render` and the job tail. Signature changes are agreed before either side edits. |
+| The agent's render tool | `POST /internal/render` (API.md §2.7). P3 implements, P1's Manim Generator calls. |
 | `samples/` docstring format | `title:` / `description:` / `category:` / `tags:` — the seed script depends on it. Documented in `samples/README.md`. |
 | Contract changes | `docs/FRD.md` only, own commit, straight to `main`, announced. |
 | Generated output | `dist/`, `build/`, `*.spec`, `media/`, `renders/`, `.venv/`, `.env` are gitignored. Videos live in S3, never in the repo. |

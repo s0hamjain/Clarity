@@ -120,7 +120,7 @@ The user flow, in order:
 # 6. Core Architecture
 
 ### Architecture principle
-Four components, each with one job, meeting at HTTP boundaries defined in this document. The desktop app is a thin capture-and-display surface. The coordinator is a dispatcher with no interesting logic. The agent service owns every model call. The render pipeline owns everything between "Manim source" and "MP4 on S3".
+Four components, each with one job, meeting at HTTP boundaries defined in this document. The desktop app is a thin capture-and-display surface. The coordinator owns the **job**: create it, track it, fan scenes out, stitch and upload — no model calls, no loops of its own. The agent service owns the **thinking**: three LangGraph graphs that call models, retrieve from the vector store, and run their own bounded loops (critique-and-revise; generate-lint-render-repair). The render pipeline owns everything between "Manim source" and "MP4 on S3", exposed to the agent as a single internal HTTP tool.
 
 ### High-level architecture flow
 ```text
@@ -132,13 +132,15 @@ Coordinator (Go)
   job lifecycle · cache lookup · per-scene fan-out · repair loop · concat · upload
         │  HTTP :8000                    │
         ▼                                 ├──► MongoDB Atlas   jobs · cache
-Agent service (Python, FastAPI)           ├──► Docker          one manim-worker container per scene
-  /vision  /explain  /snippets  /codegen  ├──► ffmpeg          concat, stream copy
-        │                                 └──► S3 / MinIO      finished MP4s, served directly
+Agent service (Python, FastAPI, LangGraph)◄┤  POST /internal/render (agent's render tool)
+  /vision   Intake chain                  ├──► Docker          one manim-worker container per scene
+  /explain  Explainer agent               ├──► ffmpeg          concat, stream copy
+  /scenes/render  Manim Generator agent   └──► S3 / MinIO      finished MP4s, served directly
+        │
         ├──► Google Gemini API (OCR + explanation)
         ├──► Claude API (Sonnet 5 — Manim code only)
         ├──► Voyage AI (embeddings)
-        └──► MongoDB Atlas Vector Search   manim_snippets corpus (RAG)
+        └──► MongoDB Atlas Vector Search   manim_snippets corpus — the agent's vector store
 ```
 
 Two decisions shape everything downstream:
@@ -156,12 +158,12 @@ Two decisions shape everything downstream:
 | Screen capture | macOS `screencapture -i` | Region select, built in, no dependency |
 | Installer | PyInstaller → `.app` · `create-dmg` → `.dmg` · `pkgbuild` → `.pkg` (optional) | Distributable build |
 | Coordinator | Go 1.22+ · `net/http` · `mongo-driver/v2` · AWS SDK v2 | Public API, job orchestration, cache, render dispatch |
-| Agent service | Python 3.12 · FastAPI · `anthropic` · `voyageai` · `pymongo` | All model calls, embeddings, retrieval, corpus ingest |
+| Agent service | Python 3.12 · FastAPI · **LangGraph** · **LangChain** (`langchain-core`, `langchain-google-genai`, `langchain-anthropic`, `langchain-mongodb`, `langchain-voyageai`) · **Pydantic v2** | Three agents (Intake, Explainer, Manim Generator); every model call; the vector store; corpus ingest |
 | OCR / vision | Google Gemini 3.8 Flash (`gemini-3.8-flash`) via `google-genai` | Reads the problem off the screenshot, verbatim. `temperature=0` for deterministic transcription. |
 | Explanation | Google Gemini 3.8 Flash (`gemini-3.8-flash`) | Written explanation + storyboard |
 | Code generation | Claude Sonnet 5 (`claude-sonnet-5`) | Manim source and repair |
 | Embeddings | Voyage AI `voyage-code-3` (1024 dims) | Embeds snippet corpus and scene queries |
-| Database | MongoDB Atlas (M0 free tier) | `jobs`, `cache`, `manim_snippets` collections; Atlas Vector Search index |
+| Database | MongoDB Atlas (M0 free tier) | `jobs`, `cache` (coordinator); `manim_snippets` — the Manim Generator's **vector store**, via `langchain_mongodb.MongoDBAtlasVectorSearch` over the `snippets_vector` index |
 | Render isolation | Docker · `manim-worker` image (Python + Manim CE + LaTeX + ffmpeg) | One container per scene, `--network none` |
 | Video join | ffmpeg concat demuxer, `-c copy` | No re-encode |
 | Object storage | S3 (MinIO locally) | Finished videos, public-read on `renders/` |
@@ -260,136 +262,143 @@ The text embedded for each document is `title + "\n" + description + "\n" + tags
 
 ---
 
-# 10. Agent Service API (internal, Python, `:8000`)
+# 10. Agent Service (internal, Python, `:8000`)
 
 > Full endpoint reference — errors, limits, timeouts, corpus-management endpoints, curl examples — is in [API.md](API.md) §3. The shapes below are the summary.
 
-Not exposed to the desktop app — only the coordinator calls it. Every response is JSON produced via structured outputs (`output_config={"format": ...}`); no markdown fences, no prose. Every request carries `guardrails: bool`.
+The agent service is where every model call happens, and it is built as **agents**: LangGraph graphs whose nodes call models, tools, and a vector store, and whose edges decide what happens next based on what came back. The coordinator (Go) still owns the *job* — creating it, tracking status, fanning scenes out, stitching and uploading — but the *thinking* loops live here.
 
-### 10.1 `POST /vision`
+### 10.1 Architecture
+
+| Layer | Library | Used for |
+|---|---|---|
+| Orchestration | **LangGraph** (`langgraph`) | Each agent is a `StateGraph`: typed state, nodes as functions, conditional edges, bounded retry loops |
+| Prompt infrastructure | **LangChain** (`langchain-core`) | `ChatPromptTemplate`s loaded from `prompts/*.md`, `.with_structured_output(PydanticModel)` on every model call, `Runnable` composition for the single-step chains |
+| Models | `langchain-google-genai` · `langchain-anthropic` | `ChatGoogleGenerativeAI(model="gemini-3.8-flash")` · `ChatAnthropic(model="claude-sonnet-5")` |
+| Vector store | `langchain-mongodb` · `langchain-voyageai` | `MongoDBAtlasVectorSearch` over `manim_snippets` with `VoyageAIEmbeddings(model="voyage-code-3")`, exposed as a **retriever** |
+| Data shapes | **Pydantic v2** | Every request, response, graph state, and node output is a `BaseModel`. Nothing is a bare `dict`. |
+| HTTP | FastAPI | One route per graph; the route builds the initial state, runs the graph, returns the final state's output model |
+| Observability | LangSmith (optional) | `LANGSMITH_TRACING=true` traces every node; `thread_id` = `job_id` (or `job_id/scene_index`) so a job's graphs group together |
+
+Three graphs, one per endpoint:
+
+| Graph | Endpoint | Kind | Models | Loop |
+|---|---|---|---|---|
+| **Intake** | `POST /vision` | Single-step chain (`prompt \| model.with_structured_output`) | Gemini 3.8 Flash, `temperature=0` | none |
+| **Explainer** | `POST /explain` | Agent: draft → critique → (revise → critique)? | Gemini 3.8 Flash | ≤ 1 revision |
+| **Manim Generator** | `POST /scenes/render` | Agent: retrieve → generate → lint → render → (repair)… → ingest | Sonnet 5 generates; Gemini Flash never touches code | ≤ 3 render attempts, ≤ 2 lint retries each |
+
+Principles that hold for every graph:
+
+- **State is a Pydantic model**, declared in `agent/app/graphs/<name>/state.py`. Nodes take the state and return a partial update. No `TypedDict`, no `dict`.
+- **Every model call uses `.with_structured_output(SomeModel)`.** The prompt never asks for JSON in prose; the schema enforces it. Validation failure is a node error, handled by the graph, never a 500.
+- **Prompts are files.** `agent/app/prompts/*.md` with `{placeholders}`, loaded once into `ChatPromptTemplate`s. No prompt text in Python.
+- **Graphs are stateless across requests.** No checkpointer. The job's durable state is the coordinator's record in Atlas. A graph runs to completion inside one HTTP request.
+- **Tools are explicit nodes**, not model-chosen function calls. The render step is a node that calls the coordinator's internal render endpoint. The model writes code; the graph decides to run it.
+- **Bounded loops.** Every conditional edge that can loop has a counter in state and a hard cap. A graph can never spin.
+
+### 10.2 `POST /vision` — Intake chain
 
 ```json
 // request
 { "image_b64": "iVBORw0KG...", "media_type": "image/png", "guardrails": false }
 
 // response
-{ "problem_text": "Differentiate f(x) = x^2 sin(x) using the product rule.", "category": "math", "confidence": 0.94 }
+{ "problem_text": "def binary_search(arr, target): ...", "category": "algorithm", "confidence": 0.91 }
 ```
 
-| Field | Rule |
-|---|---|
-| `problem_text` | **Verbatim transcription.** No paraphrase, no added context. This string is hashed — editorializing destroys the cache. |
-| `category` | `"math"` \| `"algorithm"` \| `"unknown"`. Selects the explainer prompt and filters snippet retrieval. |
-| `confidence` | 0.0–1.0. Below 0.5 the coordinator proceeds but flags the job. |
+One `Runnable`: `vision_prompt | gemini_flash.with_structured_output(VisionResponse)`, image passed as an inline `Part`. `temperature=0`, thinking `low`. **`problem_text` is verbatim** — this string is hashed by the coordinator; the prompt contains no instruction to interpret or summarize. Nothing problem-like → `category: "unknown"`, `problem_text: ""`.
 
-Nothing problem-like on screen → `category: "unknown"`, `problem_text: ""`; the coordinator fails the job cleanly.
-
-The coordinator strips the `data:image/png;base64,` prefix before calling this endpoint. The agent receives raw base64 only.
-
-**Model:** Google **Gemini 3.8 Flash** (`gemini-3.8-flash`) through the `google-genai` SDK, with `temperature=0`, thinking level `low`, and a JSON response schema (`response_mime_type="application/json"`, `response_schema=VisionResponse`). The cache needs two captures of the same problem to transcribe identically; `temperature=0` plus a schema plus `normalize()` (§12) is the whole determinism strategy. The Sprint 1 collision experiment measures how well it works. Cheaper fallback if latency matters more than accuracy: `gemini-3.5-flash-lite`.
-
-### 10.2 `POST /explain`
+### 10.3 `POST /explain` — Explainer agent
 
 ```json
 // request
-{ "problem_text": "...", "category": "math", "user_prompt": "why a cosine?", "guardrails": false }
+{ "problem_text": "…", "category": "algorithm", "user_prompt": "why is my binary search not working?", "guardrails": false }
 
 // response
 {
-  "explanation": "**Step 1.** The product rule says ...",
-  "storyboard": {
-    "title": "The Product Rule",
-    "scenes": [
-      { "index": 0, "narration": "Two functions multiplied together.", "visual": "Show f(x) = x^2 sin(x). Split into u = x^2 and v = sin(x), each moving to its own side.", "duration_seconds": 8 },
-      { "index": 1, "narration": "The derivative is u'v + uv'.", "visual": "Transform the split expression into u'v + uv', highlighting each term as it appears.", "duration_seconds": 10 }
-    ]
-  }
+  "explanation": "**Step 1.** …",
+  "storyboard": { "title": "Where the Binary Search Goes Wrong", "scenes": [
+    { "index": 0, "narration": "lo and hi start at the ends.", "visual": "A row of 8 boxes; pointers lo and hi under the first and last.", "duration_seconds": 8 },
+    { "index": 1, "narration": "mid rounds down — and hi never moves past it.", "visual": "mid pointer appears; hi jumps to mid instead of mid-1; the box checked twice is highlighted.", "duration_seconds": 10 }
+  ] },
+  "revisions": 1
 }
 ```
 
-| Field | Rule |
-|---|---|
-| `explanation` | Markdown. Written to `jobs` the instant it lands. |
-| `storyboard.scenes` | **2–5 items.** Each is an independent Manim `Scene`, rendered in its own container, concatenated in order. |
-| `scenes[].narration` | ≤ 90 chars. Becomes on-screen text. |
-| `scenes[].visual` | Relative terms only ("below", "next to", "replacing"). Never coordinates. |
-| `scenes[].duration_seconds` | 5–15. A budget. |
+```
+draft ──► critique ──► pass? ──► END
+                        │ fail, revisions < 1
+                        ▼
+                      revise ──► critique
+                        (fail, revisions ≥ 1 → END with the best draft, flagged in logs)
+```
 
-Every scene must show something text cannot: a function and its derivative plotted together, a pointer walking a list, a shape transforming. A scene that restates algebra is cut.
+| Node | Model | Does |
+|---|---|---|
+| `draft` | Gemini Flash → `ExplainDraft` | Explanation + 2–5 scene storyboard from the category-specific prompt (`explain_math.md` / `explain_algorithm.md`, + `explain_guardrails.md` when `guardrails`). |
+| `critique` | Gemini Flash → `Critique` | Checks the rules as a rubric: 2–5 scenes · `narration` ≤ 90 chars · every scene shows something text can't (motion, a plot, a pointer, a transform — **not** restated algebra) · relative positioning language only · if `guardrails`, the final answer is genuinely absent. Returns `passed: bool` and a list of `issues`. Hard rules (counts, lengths) are also checked in Python before the model is asked. |
+| `revise` | Gemini Flash → `ExplainDraft` | Re-drafts with the issues appended. Increments `revisions`. |
 
-**Guardrails mode:** explanation and scenes teach the *method*, not the *result*. Math: show the rule, work the setup, leave the final substitution. Code: walk the logic and data flow, emit a skeleton with decision points named, never a complete solution. This is a prompt instruction, not a filter — verify it on real output.
+### 10.4 `POST /scenes/render` — Manim Generator agent
 
-### 10.3 `POST /snippets/search`
-
-Retrieval, not generation. Given one scene, return the most relevant verified snippets from `manim_snippets`.
+One call per scene. The coordinator fans these out concurrently, bounded by its render semaphore. The agent owns everything from "here is a scene" to "here is a finished clip or a final failure" — retrieval, generation, linting, rendering through the coordinator's internal endpoint, repair, and ingesting the result back into the corpus.
 
 ```json
 // request
-{ "scene": { "index": 0, "narration": "...", "visual": "Show f(x) = x^2 sin(x), split into u and v." }, "category": "math", "k": 3 }
+{ "job_id": "j_7f3a9c21", "scene": { "index": 1, "narration": "…", "visual": "…" }, "category": "algorithm", "guardrails": false, "work_dir": "/tmp/clarity/j_7f3a9c21/scene1", "quality": "-ql" }
 
-// response
-{ "snippets": [ { "title": "MathTex with relative positioning", "description": "...", "source": "from manim import *\n...", "score": 0.87 } ] }
+// response — success
+{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/scene1/scene1.mp4", "attempts": 2, "snippets_used": ["66f1…", "66f2…"], "snippet_id": "66f9…" }
+
+// response — gave up
+{ "ok": false, "attempts": 3, "stage": "render", "last_traceback": "NameError: name 'RIGHT_ARROW' is not defined …" }
 ```
 
-Implementation: embed `narration + " " + visual` with `voyage-code-3`, `input_type="query"`; run `$vectorSearch` on `snippets_vector` with `numCandidates: 50`, `limit: k`, filter `verified: true` and `category ∈ {request.category, "general"}`. Return `score` from `$meta: "vectorSearchScore"`.
-
-### 10.4 `POST /codegen`
-
-Per scene. Snippets are passed in so the coordinator controls retrieval and the call is reproducible.
-
-```json
-// request
-{
-  "scene": { "index": 0, "narration": "...", "visual": "..." },
-  "snippets": [ { "title": "...", "source": "..." } ],
-  "previous_source": null,
-  "traceback": null,
-  "guardrails": false
-}
-
-// response
-{ "manim_source": "from manim import *\n\nclass GeneratedScene(Scene):\n    ...", "scene_class": "GeneratedScene" }
+```
+retrieve ──► generate ──► lint ──► ok? ──► render ──► ok? ──► ingest ──► END
+                ▲           │ fail            │ fail
+                │           │ (lint_retries<2)│ (attempts<3)
+                └───────────┘                 │
+                ▲                             │
+                └──── retrieve (hint = traceback line 1) ◄──┘
+                                              │ attempts ≥ 3 → END (ok: false)
 ```
 
-| Field | Rule |
-|---|---|
-| `manim_source` | Complete runnable Manim CE Python. One file. Imports: `from manim import *` and stdlib only. |
-| `scene_class` | **Always the literal `"GeneratedScene"`.** Anything else = failure, trigger repair. |
+| Node | Model / tool | Does |
+|---|---|---|
+| `retrieve` | `MongoDBAtlasVectorSearch.as_retriever(k=3, pre_filter={verified: true, category ∈ {cat, "general"}})` | Query = `narration + " " + visual` (+ `" " + hint` on repair). Stores `snippets` in state. Empty result is fine. |
+| `generate` | **Claude Sonnet 5** → `ManimSource` | `codegen.md` on first attempt; `repair.md` (with `previous_source` + last 40 traceback lines) when `traceback` is set. Snippets pasted verbatim under "Reference — imitate these." Asserts `class GeneratedScene(Scene)` is present — otherwise it's a lint failure. |
+| `lint` | Python, no model | `ast.parse`; imports only `manim`/stdlib; no `os.system`, `subprocess`, `eval`, `exec`, `__import__`, `open(` for writing; literal coordinates (`np.array([`, `.move_to([`) flagged. Failure → back to `generate` with the lint message as `traceback`, up to 2 times per render attempt. |
+| `render` | Tool: `POST <COORDINATOR_URL>/internal/render` (§14.1) | Coordinator runs the source in `manim-worker` (its own pre-check runs again — defense in depth), returns `clip_path` or `{stage, traceback}`. Increments `attempts`. |
+| `ingest` | Atlas upsert | On success: `{title: storyboard title + " — scene " + i, description: visual, category, tags: [], source, origin: "generated", verified: false}` via the same code path as `/snippets/ingest`. Failure is logged, never fatal. |
 
-Repair: same endpoint with `previous_source` and `traceback` set. On repair, the coordinator re-runs `/snippets/search` with the traceback's first line appended to the query, so a `MathTex` LaTeX error retrieves a snippet showing correct `MathTex` usage.
+### 10.5 Snippet corpus endpoints
 
-Prompt constraints: relative positioning only (`next_to`, `arrange`, `to_edge`, `shift` by fractions of `config.frame_width`); never literal coordinates; never set resolution or frame rate; `narration` → `Text(...)` at `to_edge(DOWN)`; retrieved snippets included verbatim as the reference to imitate.
+Unchanged from the corpus-management design: `POST /snippets/ingest`, `GET /snippets`, `GET /snippets/{id}`, `PATCH /snippets/{id}`, `DELETE /snippets/{id}` (API.md §3.6–3.10). All go through the same `MongoDBAtlasVectorSearch` instance the retriever uses, so index and query embeddings can never drift.
 
-### 10.5 `POST /snippets/ingest`
-
-Adds a snippet to the corpus. Used by the seed script and by the coordinator after a successful render.
-
-```json
-// request
-{ "title": "...", "description": "...", "category": "math", "tags": ["..."], "source": "...", "origin": "generated", "verified": false }
-
-// response
-{ "id": "66f1...", "embedded": true }
-```
-
-Generated snippets land with `verified: false` and are **excluded from retrieval** until a human runs `scripts/promote_snippet.py <id>` after watching the clip. A scene that renders but looks wrong must not become a reference.
+Two **debug endpoints** expose single nodes so they can be tested without running a whole graph: `POST /snippets/search` (the `retrieve` node) and `POST /codegen` (the `generate` node). The coordinator never calls them.
 
 ### 10.6 `GET /healthz`
 
-`{ "ok": true, "anthropic": true, "voyage": true, "atlas": true, "snippets_verified": 42 }`
+`{ "ok": true, "gemini": true, "anthropic": true, "voyage": true, "atlas": true, "coordinator": true, "snippets_verified": 42, "models": {...}, "graphs": ["intake", "explainer", "manim_generator"], "version": "0.1.0" }`
 
-### 10.7 Models
+### 10.7 Models and cost policy
 
-| Endpoint | Model | Settings |
+| Where | Model | Settings |
 |---|---|---|
-| `/vision` | **Gemini 3.8 Flash** `gemini-3.8-flash` | `temperature=0`, thinking `low`, JSON schema response. Image as an inline `Part` (`mime_type="image/png"`). |
-| `/explain` | **Gemini 3.8 Flash** `gemini-3.8-flash` | Default temperature, thinking `medium`, JSON schema response. |
-| `/codegen` (generate and repair) | **Claude Sonnet 5** `claude-sonnet-5` | Adaptive thinking. Structured outputs. `client.messages.stream()` — output is long. |
-| Embeddings | Voyage `voyage-code-3` | See §13. |
+| Intake `/vision` | **Gemini 3.8 Flash** | `temperature=0`, thinking `low` |
+| Explainer `draft`, `revise`, `critique` | **Gemini 3.8 Flash** | default temperature, thinking `medium` (`critique`: `low`) |
+| Manim Generator `generate` | **Claude Sonnet 5** | streaming, structured output |
+| Embeddings | Voyage `voyage-code-3` | 1024 dims |
 
-**Cost policy:** no Opus-tier models anywhere. Gemini Flash is the default for everything; Claude Sonnet is used only for `/codegen`, where code quality measurably reduces repair attempts. If a cheaper model does the job in an ablation, switch to it.
+**No Opus-tier models anywhere.** Gemini Flash is the default for everything; Sonnet is used only in the `generate` node, where code quality measurably reduces render attempts. If the Sprint 3 ablation shows Flash matches Sonnet on first-render success, `generate` moves to Flash and the Anthropic dependency goes away.
 
-Claude rules: structured outputs for every response; no assistant prefill (400 on Sonnet 5); never pass `temperature` (400). Gemini rules: always a `response_schema`; `temperature=0` on `/vision`; parse the JSON, never regex it.
+Claude rules: `.with_structured_output()` always; never assistant prefill; never `temperature`. Gemini rules: `.with_structured_output()` always; `temperature=0` on Intake only.
+
+### 10.8 The retriever is the vector-store mechanism
+
+The Manim Generator's memory of "what working Manim looks like" is the `manim_snippets` collection in MongoDB Atlas, indexed by `snippets_vector` (§9.3) and wrapped by `langchain_mongodb.MongoDBAtlasVectorSearch`. Seeding, retrieval, and post-render ingest all go through that one object. §13 has the corpus design; the point here is that it is a first-class part of the agent, not a side lookup — every generation is grounded in it, and every success feeds it.
 
 ---
 
@@ -475,10 +484,11 @@ Generated Manim fails two ways. Code that crashes is recoverable via the repair 
 | `generated` | Source from successful renders, ingested `verified: false`, promoted by hand | grows | coordinator → P1's ingest endpoint |
 
 ### Pipeline
+All three arrows go through one `langchain_mongodb.MongoDBAtlasVectorSearch` instance (FRD §10.8) so index and query embeddings can never drift.
 ```text
-seed .py files ──► scripts/seed_snippets.py ──► embed (voyage-code-3, "document") ──► manim_snippets
-scene {narration, visual} ──► embed ("query") ──► $vectorSearch k=3, verified=true ──► codegen prompt
-render succeeded ──► POST /snippets/ingest (verified=false) ──► promote_snippet.py after review
+seed .py files ──► scripts/seed_snippets.py ──► store.add_documents (voyage-code-3) ──► manim_snippets
+scene {narration, visual} ──► retriever k=3, pre_filter verified=true ──► Manim Generator `retrieve` node ──► `generate` prompt
+`render` node succeeded ──► `ingest` node: store.add_documents (verified=false) ──► PATCH verified=true after human review
 ```
 
 ### Rules
@@ -493,19 +503,22 @@ render succeeded ──► POST /snippets/ingest (verified=false) ──► prom
 # 14. Render Pipeline
 
 ### 14.1 Per-scene fan-out
-After `/explain` returns N scenes, the coordinator starts N goroutines bounded by a semaphore (`RENDER_CONCURRENCY`). Each independently: `/snippets/search` → `/codegen` → static pre-check → `docker run` → on failure, repair up to 3 times **for that scene only**. The coordinator waits for all N, then concatenates whatever succeeded.
+After `/explain` returns N scenes, the coordinator creates a per-scene `work_dir` and starts N goroutines, each calling the agent's **`POST /scenes/render`** (§10.4). The agent owns the loop — retrieve, generate, lint, render, repair up to 3 times — and renders by calling back into the coordinator's **`POST /internal/render`**, which is where the semaphore (`RENDER_CONCURRENCY`) and P2's `Render()` live. The coordinator waits for all N, then concatenates whatever came back `ok: true`.
 
 ```go
-func Render(ctx context.Context, src string, workDir string) (clipPath string, err *RenderError)
+// P2 implements; the /internal/render handler calls it.
+func Render(ctx context.Context, src string, workDir string, quality string) (clipPath string, err *RenderError)
 type RenderError struct { Stage string /* "precheck"|"container"|"timeout" */; Traceback string }
-func RenderWithRepair(ctx context.Context, scene Scene, retrieve RetrieveFunc, codegen CodegenFunc) (clipPath string, err *RenderError)
+// P2 implements; the coordinator calls it once per job after fan-out.
 func Concat(ctx context.Context, clipPaths []string, outKey string) (videoURL string, err error)
 ```
 
-A scene that exhausts repair is **dropped, not the job**. Zero surviving scenes → `done` with `video_url: null`.
+**`POST /internal/render`** (coordinator, localhost only, called by the agent's `render` node — API.md §2.7): `{source, work_dir, quality}` → `{ok: true, clip_path}` or `{ok: false, stage, traceback}`. Acquires the render semaphore, runs the static pre-check, then `Render()`. Never renders without the semaphore.
+
+A scene whose agent call returns `ok: false` is **dropped, not the job**. Zero surviving scenes → `done` with `video_url: null`.
 
 ### 14.2 Static pre-check (before every `docker run`)
-Parses as Python (`python -c "import ast,sys; ast.parse(sys.stdin.read())"`); rejects any import not `manim`/stdlib; rejects `os.system`, `subprocess`, `open(` for writing, `__import__`, `eval`, `exec`; requires `class GeneratedScene(Scene)`. Cheap, and turns most failures into a fast traceback instead of a slow container.
+Runs inside `/internal/render` on every call — the agent's `lint` node already ran a similar check, but this one is the security gate and it runs regardless. Parses as Python (`python -c "import ast,sys; ast.parse(sys.stdin.read())"`); rejects any import not `manim`/stdlib; rejects `os.system`, `subprocess`, `open(` for writing, `__import__`, `eval`, `exec`; requires `class GeneratedScene(Scene)`. Cheap, and turns most failures into a fast traceback instead of a slow container.
 
 ### 14.3 Docker isolation
 ```sh
@@ -521,7 +534,7 @@ ffmpeg -f concat -safe 0 -i concat_list.txt -c copy final.mp4
 Works only because every scene shares resolution/fps. Guarded by 14.3's job-level constant.
 
 ### 14.5 Post-render ingest
-On a successful clip, the coordinator POSTs `{ source, title: storyboard.title + " — scene " + index, description: scene.visual, category, origin: "generated", verified: false }` to `/snippets/ingest`. Fire-and-forget; a failed ingest never fails the job.
+Done by the agent's `ingest` node (§10.4), not the coordinator — the agent has the source, the scene, and the render result in its state. The coordinator only reads `snippet_id` from the response for logging.
 
 ### 14.6 Storage
 Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. Bucket lifecycle: 14 d. Write `cache` and update `jobs` only after upload succeeds.
@@ -636,9 +649,11 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 |---|---|---|
 | F17 | `/vision` returns verbatim problem text, category, confidence via structured outputs. | Must |
 | F18 | `/explain` returns markdown explanation and a 2–5 scene storyboard. | Must |
-| F19 | `/snippets/search` returns top-k verified snippets from Atlas Vector Search. | Must |
-| F20 | `/codegen` returns runnable Manim CE source with `class GeneratedScene`, using provided snippets. | Must |
-| F21 | `/codegen` repair path takes previous source and traceback. | Must |
+| F19 | `/scenes/render` is a LangGraph agent: retrieve (Atlas vector store) → generate (Sonnet) → lint → render (`/internal/render`) → repair ≤ 3 → ingest. | Must |
+| F20 | The `generate` node returns runnable Manim CE source with `class GeneratedScene`, grounded in the retrieved snippets. | Must |
+| F21 | The repair path re-retrieves with the traceback as a hint and passes previous source + traceback to `generate`. | Must |
+| F21b | `/explain` is a LangGraph agent with a critique node and at most one revision. | Should |
+| F21c | Every graph state and node I/O is a Pydantic model; every model call uses `.with_structured_output`. | Must |
 | F22 | `/snippets/ingest` embeds and stores a snippet; generated snippets land unverified. | Must |
 | F23 | Guardrails mode changes `/explain` and `/codegen` output to teach the method without the final answer. | Should |
 | F24 | Seed script ingests every `samples/*.py` with its docstring metadata. | Must |
@@ -652,9 +667,9 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | F28 | `explanation` is written to `jobs` before any scene work starts. | Must |
 | F29 | Cache key matches §12 exactly, with a unit test. | Must |
 | F30 | Cache hit returns explanation and video without calling `/explain`. | Must |
-| F31 | Scenes fan out concurrently, bounded by `RENDER_CONCURRENCY`. | Must |
-| F32 | A scene exhausting repair is dropped; the job completes with the rest. | Must |
-| F33 | Successful sources are POSTed to `/snippets/ingest`, fire-and-forget. | Should |
+| F31 | Scenes fan out concurrently as `/scenes/render` calls; `/internal/render` is bounded by `RENDER_CONCURRENCY`. | Must |
+| F32 | A scene whose agent call returns `ok: false` is dropped; the job completes with the rest. | Must |
+| F33 | `POST /internal/render` exists, is localhost-only, acquires the semaphore and runs the pre-check before `Render()`. | Must |
 | F34 | Every `jobs` write sets `updated_at`. | Must |
 
 ### Render pipeline
@@ -690,14 +705,16 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 |---|---|
 | `/vision` → `unknown` | Job `failed`, `error: "no_problem_found"`. Panel: "No problem found in that capture." |
 | `/explain` error | Job `failed`, `error` set. Panel: plain error + retry. |
-| `/snippets/search` error | Log, proceed with empty snippets. Retrieval is an improvement, not a dependency. |
-| `/codegen` error | Counts as a failed attempt for that scene; repair loop continues. |
-| Pre-check reject | Counts as a failed attempt; the rejection reason is the traceback. |
-| Container timeout | `docker kill`, failed attempt. |
-| Scene exhausts 3 attempts | Dropped. Job continues. |
+| `retrieve` node error (Atlas) | Agent logs, proceeds with empty snippets. Retrieval is an improvement, not a dependency. |
+| `generate` node error / schema violation | Agent counts a lint retry; after 2, counts a render attempt and re-retrieves. |
+| `lint` reject | Back to `generate` with the reason as traceback, ≤ 2 per attempt. |
+| `/internal/render` pre-check reject or container failure | Agent counts a failed attempt; retrieves with the traceback's first line as hint; repairs. |
+| Container timeout | `docker kill`; `/internal/render` returns `stage: "timeout"`; failed attempt. |
+| Agent returns `ok: false` (3 attempts) | Coordinator drops the scene. Job continues. |
+| Agent unreachable / `/scenes/render` 5xx | Coordinator treats the scene as dropped; job continues. |
 | Zero scenes survive | `done`, `video_url: null`. Cache **not** written. |
 | Concat or upload error | `done`, `video_url: null`, `error` set. Cache not written. |
-| Ingest error | Logged, ignored. |
+| `ingest` node error | Agent logs, returns `snippet_id: null`. Never fatal. |
 | Atlas unreachable | Coordinator refuses new jobs with `503`; `/healthz` reports `atlas: false`. |
 | Desktop: server unreachable | Notification. Spotlight box stays open for retry. |
 | Desktop: poll 404 on a live job | Result box: "This job expired." |
@@ -745,6 +762,8 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | `VISION_MODEL` | `gemini-3.8-flash` | |
 | `EXPLAIN_MODEL` | `gemini-3.8-flash` | |
 | `CODEGEN_MODEL` | `claude-sonnet-5` | |
+| `COORDINATOR_URL` | `http://localhost:8080` | The agent's render tool calls `/internal/render` here |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | unset | Optional graph tracing |
 
 ### `server/.env`
 | Var | Default | Purpose |
@@ -772,16 +791,16 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 # 23. Key Implementation Rules
 
 ### Agent service
-1. Every response is schema-enforced JSON (Claude `output_config.format`; Gemini `response_schema`). Never parse prose for JSON.
-2. `/vision` prompt contains no instruction to interpret, summarize, or contextualize. Verbatim only.
-3. `scene_class` is asserted equal to `"GeneratedScene"` before returning from `/codegen`.
+1. Every model call goes through LangChain `.with_structured_output(PydanticModel)`. Never parse prose for JSON. Never assistant prefill. Never `temperature` on a Claude model.
+2. The `/vision` prompt contains no instruction to interpret, summarize, or contextualize. Verbatim only.
+3. Graph state, node inputs and outputs, requests, responses are all Pydantic models. No `dict`, no `TypedDict`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
-5. Index and query use the same `EMBED_MODEL`. Changing it means re-running the seed script.
-6. `/vision` and `/explain` are Gemini 3.8 Flash (`/vision` at `temperature=0`). `/codegen` is Sonnet 5 via `client.messages.stream()`; never assistant prefill, never `temperature` on Claude. No Opus-tier models.
+5. One `MongoDBAtlasVectorSearch` instance for seed, retrieve, and ingest; index and query use the same `EMBED_MODEL`.
+6. Every loop in a graph has a counter in state and a hard cap (Explainer ≤ 1 revision; Manim Generator ≤ 3 render attempts, ≤ 2 lint retries each). Gemini Flash for Intake and Explainer; Sonnet 5 only in `generate`. No Opus-tier models.
 
 ### Coordinator
 7. `POST /api/jobs` writes the job and returns. Everything else is in a goroutine with `defer recover()`.
-8. `explanation` is written to `jobs` before any `/snippets/search` or `/codegen` call.
+8. `explanation` is written to `jobs` before any `/scenes/render` call.
 9. Every `jobs` write sets `updated_at = now`.
 10. `cache` is written only after upload succeeds. Never on any failure path.
 11. Cache hit path never calls `/explain`.
@@ -789,9 +808,9 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 13. `PromptVersion` is bumped in the same commit as any prompt change, in any component.
 
 ### Render
-14. Static pre-check runs before every `docker run`, including repairs.
-15. `docker run` always has `--network none`, `--memory`, `--cpus`, and a context timeout.
-16. A scene failure never propagates to sibling scenes.
+14. Static pre-check runs inside `/internal/render` before every `docker run`, including the agent's repair attempts.
+15. `docker run` always has `--network none`, `--memory`, `--cpus`, and a context timeout. `/internal/render` never runs without the semaphore.
+16. A scene failure never propagates to sibling scenes — an `ok: false` from the agent drops that scene only.
 
 ### Desktop
 17. No secrets in the app. Only `server_url` and preferences.

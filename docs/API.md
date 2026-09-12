@@ -167,13 +167,37 @@ Debugging and pre-warming checks. Not called by the desktop app.
 
 `200` if `ok`, `503` otherwise. `docker`, `s3`, `agent` are checked at boot and every 60 s, not per request.
 
+### 2.7 `POST /internal/render` — render one source file (internal; called by the agent)
+
+The agent's render tool. Bound to `127.0.0.1` and refused from any other address. Acquires the render semaphore, runs the static pre-check (FRD §14.2), then P2's `Render()`.
+
+**Request**
+```json
+{ "source": "from manim import *
+
+class GeneratedScene(Scene):
+    …", "work_dir": "/tmp/clarity/j_7f3a9c21/scene1", "quality": "-ql" }
+```
+
+**Response `200`**
+```json
+{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/scene1/scene1.mp4", "duration_seconds": 9.4 }
+```
+```json
+{ "ok": false, "stage": "precheck", "traceback": "banned import: subprocess" }
+{ "ok": false, "stage": "container", "traceback": "…last 40 lines of manim stderr…" }
+{ "ok": false, "stage": "timeout", "traceback": "render exceeded 120s" }
+```
+A failed render is a `200` with `ok: false` — that's data for the agent's repair loop, not an error. Non-2xx only for infrastructure: `503 dependency_down` (Docker not running), `429 render_busy` if the semaphore wait exceeds 60 s (agent retries after `Retry-After`).
+
+
 ---
 
 ## 3. Agent Service API
 
-Internal. Only the coordinator calls it. Every response body is schema-enforced JSON — no prose, no fences. Models: `/vision` → Gemini 3.8 Flash at `temperature=0`; `/explain` → Gemini 3.8 Flash; `/codegen` → Claude Sonnet 5. Every request carries `guardrails`.
+Internal. Only the coordinator calls it. Every endpoint runs a **LangGraph** graph (or a single LangChain runnable) and returns a Pydantic-validated JSON body — no prose, no fences. Models: Intake and Explainer → Gemini 3.8 Flash; Manim Generator's `generate` node → Claude Sonnet 5. Every request carries `guardrails`. Architecture in FRD §10.
 
-### 3.1 `POST /vision` — transcribe a screenshot
+### 3.1 `POST /vision` — Intake chain: transcribe a screenshot
 
 **Request**
 ```json
@@ -183,7 +207,9 @@ Internal. Only the coordinator calls it. Every response body is schema-enforced 
 
 **Response `200`**
 ```json
-{ "problem_text": "def binary_search(arr, target):\n    lo, hi = 0, len(arr)\n    ...", "category": "algorithm", "confidence": 0.91 }
+{ "problem_text": "def binary_search(arr, target):
+    lo, hi = 0, len(arr)
+    ...", "category": "algorithm", "confidence": 0.91 }
 ```
 
 | Field | Rule |
@@ -194,9 +220,9 @@ Internal. Only the coordinator calls it. Every response body is schema-enforced 
 
 `category: "unknown"` with `problem_text: ""` is a valid `200` — the coordinator turns it into `failed / no_problem_found`.
 
-**Errors:** `400 bad_request` · `502 model_error` (Anthropic error, retryable) · `504 model_timeout`.
+**Errors:** `400 bad_request` · `502 model_error` (`details.provider: "gemini"`, retryable) · `504 model_timeout`.
 
-### 3.2 `POST /explain` — explanation + storyboard
+### 3.2 `POST /explain` — Explainer agent: explanation + storyboard
 
 **Request**
 ```json
@@ -213,102 +239,116 @@ Internal. Only the coordinator calls it. Every response body is schema-enforced 
       { "index": 0, "narration": "lo and hi start at the ends.", "visual": "A row of 8 boxes; pointers lo and hi under the first and last.", "duration_seconds": 8 },
       { "index": 1, "narration": "mid rounds down — and hi never moves past it.", "visual": "mid pointer appears; hi jumps to mid instead of mid-1; highlight the box that gets checked twice.", "duration_seconds": 10 }
     ]
-  }
+  },
+  "revisions": 1
 }
 ```
 
-Constraints: 2–5 scenes; `narration` ≤ 90 chars; `visual` in relative terms; `duration_seconds` 5–15.
+Graph: `draft → critique → (revise → critique)?`, at most one revision. `revisions` reports how many happened. Constraints enforced by the critique rubric and by Python: 2–5 scenes; `narration` ≤ 90 chars; `visual` in relative terms; `duration_seconds` 5–15; with `guardrails`, no final answer.
 
-**Errors:** `400` · `502 model_error` · `504 model_timeout` · `422 schema_violation` (model output failed validation after one retry).
+**Errors:** `400` · `422 schema_violation` (draft failed validation after the graph's own retry) · `502 model_error` · `504 model_timeout`.
 
-### 3.3 `POST /snippets/search` — retrieve reference snippets
+### 3.3 `POST /scenes/render` — Manim Generator agent: one scene to one clip
 
-**Request**
-```json
-{ "scene": { "index": 1, "narration": "…", "visual": "…" }, "category": "algorithm", "k": 3, "hint": "NameError: name 'RIGHT_ARROW' is not defined" }
-```
-`hint` is optional — on a repair attempt the coordinator passes the first line of the traceback so retrieval can find a snippet showing the correct API.
-
-**Response `200`**
-```json
-{ "snippets": [ { "id": "66f1…", "title": "Array walk with a moving pointer", "description": "…", "source": "from manim import *\n…", "score": 0.86 } ] }
-```
-Only `verified: true` snippets are ever returned. Empty list is a valid `200`.
-
-**Errors:** `400` · `502 embedding_error` · `503 atlas_unavailable`.
-
-### 3.4 `POST /codegen` — generate or repair Manim source
+The agent owns the whole loop for one scene: retrieve examples from the Atlas vector store → generate Manim source (Sonnet) → lint → render via the coordinator's `POST /internal/render` (§2.7) → repair on failure, up to 3 render attempts → ingest the successful source back into the corpus.
 
 **Request**
 ```json
 {
+  "job_id": "j_7f3a9c21",
   "scene": { "index": 1, "narration": "…", "visual": "…" },
-  "snippets": [ { "title": "…", "source": "…" } ],
-  "previous_source": null,
-  "traceback": null,
-  "guardrails": false
+  "storyboard_title": "Where the Binary Search Goes Wrong",
+  "category": "algorithm",
+  "guardrails": false,
+  "work_dir": "/tmp/clarity/j_7f3a9c21/scene1",
+  "quality": "-ql"
 }
 ```
-Repair: same call with `previous_source` and `traceback` (last 40 lines) set.
 
-**Response `200`**
+| Field | Rule |
+|---|---|
+| `work_dir` | Per-scene directory the coordinator created. The agent passes it through to `/internal/render`; the clip lands there. |
+| `quality` | The **job-level** manim quality flag. Passed through unchanged to every render attempt. |
+
+**Response `200` — success**
 ```json
-{ "manim_source": "from manim import *\n\nclass GeneratedScene(Scene):\n    def construct(self):\n        …", "scene_class": "GeneratedScene" }
+{ "ok": true, "clip_path": "/tmp/clarity/j_7f3a9c21/scene1/scene1.mp4", "attempts": 2, "lint_retries": 1, "snippets_used": ["66f1…", "66f2…", "66f3…"], "snippet_id": "66f9…" }
 ```
-The service asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)`; otherwise `422 schema_violation`.
+`snippet_id` is the newly ingested `origin: "generated", verified: false` snippet, or `null` if ingest failed (never fatal).
 
-**Errors:** `400` · `422 schema_violation` · `502 model_error` · `504 model_timeout`.
-
-### 3.5 `POST /snippets/ingest` — add a snippet to the corpus
-
-Called by the seed script (`verified: true, origin: "seed"`) and by the coordinator after a successful render (`verified: false, origin: "generated"`).
-
-**Request**
+**Response `200` — gave up**
 ```json
-{ "title": "…", "description": "…", "category": "algorithm", "tags": ["VGroup", "arrange", "Arrow"], "source": "from manim import *\n…", "origin": "generated", "verified": false }
+{ "ok": false, "attempts": 3, "lint_retries": 4, "stage": "render", "last_traceback": "NameError: name 'RIGHT_ARROW' is not defined …", "snippets_used": ["…"] }
 ```
+A `200` with `ok: false` is the normal "this scene didn't work out" result. The coordinator drops the scene and continues. Only infrastructure failures are non-2xx.
 
-**Response `201`**
+**Errors:** `400` · `502 model_error` · `502 coordinator_unreachable` (couldn't reach `/internal/render`) · `503 atlas_unavailable` · `504 model_timeout`.
+
+**Timeout budget:** 3 attempts × (90 s generate + 120 s render) + retrieval ≈ 10.5 min worst case. The coordinator's client timeout for this call is **11 min**.
+
+### 3.4 `POST /snippets/search` — debug: run the `retrieve` node alone
+
 ```json
+// request
+{ "scene": { "index": 1, "narration": "…", "visual": "…" }, "category": "algorithm", "k": 3, "hint": "NameError: name 'RIGHT_ARROW' is not defined" }
+// response
+{ "snippets": [ { "id": "66f1…", "title": "Array walk with a moving pointer", "description": "…", "source": "from manim import *
+…", "score": 0.86 } ] }
+```
+Only `verified: true` snippets are ever returned. The coordinator never calls this; it exists so retrieval quality can be tested by hand.
+
+### 3.5 `POST /codegen` — debug: run the `generate` node alone
+
+```json
+// request
+{ "scene": {…}, "snippets": [ { "title": "…", "source": "…" } ], "previous_source": null, "traceback": null, "guardrails": false }
+// response
+{ "manim_source": "from manim import *
+
+class GeneratedScene(Scene):
+    …", "scene_class": "GeneratedScene" }
+```
+Same node the agent uses; no lint, no render. For prompt iteration and the retrieval ablation.
+
+### 3.6 `POST /snippets/ingest` — add a snippet to the corpus
+
+Called by the seed script (`verified: true, origin: "seed"`) and by the Manim Generator's `ingest` node (`verified: false, origin: "generated"`) — both through the same `MongoDBAtlasVectorSearch` instance.
+
+```json
+// request
+{ "title": "…", "description": "…", "category": "algorithm", "tags": ["VGroup", "arrange", "Arrow"], "source": "from manim import *
+…", "origin": "generated", "verified": false }
+// response 201
 { "id": "66f1a2b3c4d5e6f7a8b9c0d1", "embedded": true }
 ```
 
-**Errors:** `400` · `409 duplicate_snippet` (identical `source` already stored — returns the existing `id` in `details`) · `502 embedding_error` · `503 atlas_unavailable`.
+**Errors:** `400` · `409 duplicate_snippet` (`details.id` is the existing one) · `502 embedding_error` · `503 atlas_unavailable`.
 
-### 3.6 `GET /snippets` — list snippets
+### 3.7 `GET /snippets` — list
 
-Corpus management. `?verified=false&origin=generated&limit=50&cursor=…`.
+`?verified=false&origin=generated&limit=50&cursor=…` → `{ "snippets": [ {id, title, category, origin, verified, created_at} ], "next_cursor": null }`. `source` and `embedding` omitted; fetch one for the source.
 
-**Response `200`**
-```json
-{ "snippets": [ { "id": "…", "title": "…", "category": "…", "origin": "generated", "verified": false, "created_at": "…" } ], "next_cursor": null }
-```
-`source` and `embedding` are omitted from list responses; fetch one snippet for the source.
+### 3.8 `GET /snippets/{id}` — fetch one
 
-### 3.7 `GET /snippets/{id}` — fetch one snippet
+Full document minus `embedding`. **Errors:** `404 snippet_not_found`.
 
-Full document minus `embedding`.
+### 3.9 `PATCH /snippets/{id}` — promote, demote, or edit
 
-**Errors:** `404 snippet_not_found`.
+`{ "verified": true }` or any subset of `title`, `description`, `category`, `tags`, `verified`. Changing text fields re-embeds. Returns the updated document minus `embedding`.
 
-### 3.8 `PATCH /snippets/{id}` — promote, demote, or edit
+### 3.10 `DELETE /snippets/{id}` — remove
 
-```json
-{ "verified": true }
-```
-Any subset of `title`, `description`, `category`, `tags`, `verified`. Changing `title`/`description`/`tags` re-embeds the document.
+`204 No Content`.
 
-**Response `200`** — the updated document minus `embedding`.
-
-### 3.9 `DELETE /snippets/{id}` — remove a snippet
-
-`204 No Content`. Used when a generated snippet rendered but looked wrong.
-
-### 3.10 `GET /healthz`
+### 3.11 `GET /healthz`
 
 ```json
-{ "ok": true, "gemini": true, "anthropic": true, "voyage": true, "atlas": true, "snippets_verified": 42, "models": { "vision": "gemini-3.8-flash", "explain": "gemini-3.8-flash", "codegen": "claude-sonnet-5", "embed": "voyage-code-3" }, "version": "0.1.0" }
+{ "ok": true, "gemini": true, "anthropic": true, "voyage": true, "atlas": true, "coordinator": true,
+  "snippets_verified": 42, "graphs": ["intake", "explainer", "manim_generator"],
+  "models": { "vision": "gemini-3.8-flash", "explain": "gemini-3.8-flash", "codegen": "claude-sonnet-5", "embed": "voyage-code-3" },
+  "version": "0.1.0" }
 ```
+`coordinator` = can reach `<COORDINATOR_URL>/healthz` (needed for the render tool).
 
 ---
 
@@ -331,6 +371,8 @@ Every non-2xx response has this body:
 | 415 | `unsupported_image_type` | coordinator | Not `image/png` or `image/jpeg`. |
 | 422 | `schema_violation` | agent | Model output failed schema validation after one retry. Coordinator treats as a failed attempt. |
 | 502 | `model_error` | agent | Gemini or Anthropic returned an error. `details.provider` says which. Retryable. |
+| 502 | `coordinator_unreachable` | agent | The render tool couldn't reach `/internal/render`. |
+| 429 | `render_busy` | coordinator | `/internal/render` semaphore wait exceeded 60 s. `Retry-After` set. |
 | 502 | `embedding_error` | agent | Voyage returned an error. Retryable. |
 | 503 | `queue_full` | coordinator | Bounded job queue is full. `Retry-After` set. |
 | 503 | `dependency_down` | coordinator | Atlas or agent unreachable. |
@@ -385,13 +427,15 @@ Desktop                Coordinator                    Agent                     
   │                        │◄── {explanation,storyboard} │                            │
   │  ← explanation visible │  write jobs.explanation     │                            │
   │                        │  per scene, concurrently:   │                            │
-  │                        │   POST /snippets/search ───►│                            │
-  │                        │   POST /codegen ───────────►│                            │
-  │                        │   precheck → docker run ────────────────────────────────►│
-  │                        │   (fail → /codegen again with traceback, ≤3)             │
+  │                        │   POST /scenes/render ─────►│ Manim Generator graph:     │
+  │                        │                             │  retrieve (Atlas vectors)  │
+  │                        │                             │  generate (Sonnet) → lint  │
+  │                        │◄── POST /internal/render ───│  render tool               │
+  │                        │   semaphore → precheck → docker run ────────────────────►│
+  │                        │─── {ok | traceback} ───────►│  fail? retrieve+repair ≤3  │
+  │                        │◄── {ok, clip_path, …} ──────│  ingest → Atlas            │
   │                        │  ffmpeg concat → S3 upload ─────────────────────────────►│
   │                        │  write cache; jobs.done     │                            │
-  │                        │  POST /snippets/ingest ×N ─►│  (fire-and-forget)         │
   │  ← video_url           │                             │                            │
 ```
 
@@ -406,15 +450,18 @@ Desktop                Coordinator                    Agent                     
 | Job queue depth | 32 | Coordinator, `503 queue_full` |
 | Concurrent renders | `RENDER_CONCURRENCY` (default `NumCPU/2`) | Coordinator semaphore |
 | Coordinator → `/vision` | 30 s | Coordinator client |
-| Coordinator → `/explain` | 45 s | Coordinator client |
-| Coordinator → `/snippets/search` | 10 s | Coordinator client |
-| Coordinator → `/codegen` | 90 s | Coordinator client |
+| Coordinator → `/explain` | 90 s (draft + critique + possible revise) | Coordinator client |
+| Coordinator → `/scenes/render` | 11 min (3 × (generate + render) + retrieval) | Coordinator client |
+| Agent → `/internal/render` | 130 s per call | Agent render tool |
+| Agent → Sonnet (`generate`) | 90 s, 1 retry on 5xx/429 | Agent |
 | Agent → Gemini (`/vision`) | 20 s, 1 retry on 5xx/429 | Agent |
 | Agent → Gemini (`/explain`) | 40 s, 1 retry on 5xx/429 | Agent |
 | Agent → Anthropic (`/codegen`) | 60 s per call, 1 retry on 5xx/429 | Agent |
 | Agent → Voyage | 10 s, 1 retry | Agent |
 | Per-scene container | 120 s | Coordinator, `docker kill` |
-| Repair attempts per scene | 3 | Coordinator |
+| Render attempts per scene | 3 | Agent (Manim Generator graph) |
+| Lint retries per render attempt | 2 | Agent |
+| Explainer revisions | 1 | Agent (Explainer graph) |
 | Desktop poll | 1 s interval, 180 s total | Desktop |
 | Job record TTL | 24 h | Atlas TTL index |
 | Cache entry TTL | 7 d | Atlas TTL index |
@@ -471,11 +518,13 @@ curl -s -X DELETE localhost:8000/snippets/66f1a2b3c4d5e6f7a8b9c0d1
 | `GET` | `/api/jobs/{id}/events` | Coordinator | Desktop | SSE stream | Could |
 | `GET` | `/api/cache/{hash}` | Coordinator | Dev tools | Inspect cache | Could |
 | `GET` | `/healthz` | Coordinator | Desktop, dev | Health | Must |
-| `POST` | `/vision` | Agent | Coordinator | Transcribe | Must |
-| `POST` | `/explain` | Agent | Coordinator | Explanation + storyboard | Must |
-| `POST` | `/snippets/search` | Agent | Coordinator | Retrieve snippets | Must |
-| `POST` | `/codegen` | Agent | Coordinator | Generate / repair source | Must |
-| `POST` | `/snippets/ingest` | Agent | Coordinator, seed script | Add snippet | Must |
+| `POST` | `/internal/render` | Coordinator | Agent (render tool) | Render one source in Docker | Must |
+| `POST` | `/vision` | Agent | Coordinator | Intake chain — transcribe | Must |
+| `POST` | `/explain` | Agent | Coordinator | Explainer agent — explanation + storyboard | Must |
+| `POST` | `/scenes/render` | Agent | Coordinator | Manim Generator agent — one scene to one clip | Must |
+| `POST` | `/snippets/search` | Agent | Dev (debug) | Run the retrieve node alone | Should |
+| `POST` | `/codegen` | Agent | Dev (debug) | Run the generate node alone | Should |
+| `POST` | `/snippets/ingest` | Agent | Seed script, agent's ingest node | Add snippet | Must |
 | `GET` | `/snippets` | Agent | Scripts | List snippets | Should |
 | `GET` | `/snippets/{id}` | Agent | Scripts | Fetch snippet | Should |
 | `PATCH` | `/snippets/{id}` | Agent | Promote script | Promote / edit | Should |

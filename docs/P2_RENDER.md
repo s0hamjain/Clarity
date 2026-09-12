@@ -1,6 +1,8 @@
 # Clarity — P2: Render (Docker, Manim, Video)
 
-**You are P2. Your job in one sentence:** turn a string of Manim Python into a finished MP4 on S3 — safely, inside a locked-down Docker container, retrying when the code crashes, stitching scenes together — and write the verified example scenes the AI learns from.
+**You are P2. Your job in one sentence:** turn a string of Manim Python into a finished MP4 — safely, inside a locked-down Docker container — stitch scene clips into one video on S3, and write the verified example scenes the AI learns from.
+
+The *retry* loop is not yours anymore: P1's Manim Generator agent owns generate → render → repair, and it renders by calling `POST /internal/render`, which P3 wires to your `Render()`. You make `Render()` bulletproof; the agent decides when to call it again.
 
 You never write a prompt, never write an HTTP handler, never touch the desktop app. You own everything between "here is some Python" and "here is a video URL."
 
@@ -12,7 +14,7 @@ You never write a prompt, never write an HTTP handler, never touch the desktop a
 2. **Write the examples.** 20+ small, verified Manim scenes in `samples/`. These are what the AI imitates. Each one must render *and look right* — you watch every one.
 3. **Check code before running it.** A static pre-check: must parse as Python, may only import `manim`, no `os.system` / `eval` / `subprocess` / file writes, must define `class GeneratedScene(Scene)`.
 4. **Render one scene.** Write the code to a temp dir, `docker run` it with a hard timeout, return the MP4 path or the traceback.
-5. **Retry.** Up to 3 attempts per scene: on failure, call back to get fixed code (P3 hands you the function), render again.
+5. **Validate.** A clip that exists but is 0.3 s long or the wrong resolution is a failure, not a success. `ffprobe` says so.
 6. **Stitch and upload.** Join the finished scene clips into one MP4 without re-encoding, upload to S3, return the URL.
 
 ---
@@ -35,21 +37,22 @@ You and P3 write Go in the same module (`server/`). You own one package inside i
 
 ```go
 // Render runs src inside a manim-worker container and returns the finished clip path,
-// or a RenderError with the container's stderr so the caller can send it back for repair.
-// Never blocks longer than the timeout.
-func Render(ctx context.Context, src string, workDir string) (clipPath string, err *RenderError)
+// or a RenderError with the container's stderr so the agent can repair. Never blocks
+// longer than the timeout. P3's POST /internal/render handler calls this — once per
+// agent render attempt.
+func Render(ctx context.Context, src string, workDir string, quality string) (clipPath string, err *RenderError)
 
 type RenderError struct {
     Stage     string // "precheck" | "container" | "timeout"
     Traceback string // stderr, trimmed to the last 40 lines
 }
 
-// RenderWithRepair tries up to 3 times for one scene. Each attempt: retrieve → codegen → Render.
-// retrieve and codegen are functions P3 passes in (they wrap the agent service's HTTP endpoints).
-func RenderWithRepair(ctx context.Context, scene Scene, retrieve RetrieveFunc, codegen CodegenFunc) (clipPath string, err *RenderError)
-
 // Concat joins finished clips in order with no re-encode, uploads to S3, returns the public URL.
+// P3 calls it once per job after every scene's agent call has returned.
 func Concat(ctx context.Context, clipPaths []string, outKey string) (videoURL string, err error)
+
+// Semaphore bounds concurrent docker runs. P3 acquires it in /internal/render around Render().
+var Semaphore = NewSemaphore(cfg.RenderConcurrency)
 ```
 
 ### You produce this; P1's script reads it (FRD §13)
@@ -72,7 +75,7 @@ class GeneratedScene(Scene):
 
 One scene per file. Class name always `GeneratedScene`. Relative positioning only.
 
-**Nobody is waiting on you to start.** Test `Render` by passing a file from `samples/`. Test `RenderWithRepair` by passing a fake `codegen` that returns a broken sample first and a good one second.
+**Nobody is waiting on you to start.** Test `Render` by passing a file from `samples/` — and a deliberately broken one to see the traceback the agent will get.
 
 ---
 
@@ -101,8 +104,7 @@ server/internal/render/
 ├── precheck.go                  # parse + banned list + class check
 ├── docker.go                    # Render()
 ├── semaphore.go                 # concurrency cap
-├── validate.go                  # clip size floor + ffprobe duration
-├── repair.go                    # RenderWithRepair()
+├── validate.go                  # ffprobe: duration > 1 s, expected resolution/fps for the quality flag, size floor
 ├── concat.go                    # Concat(): ffprobe consistency check → ffmpeg concat -c copy
 ├── s3.go                        # upload, public URL
 └── render_test.go               # renders every samples/*.py through a real container
@@ -181,22 +183,17 @@ Cover: `Table`; `Code` block with a highlighted line; `NumberLine` with a moving
 
 ---
 
-## Sprint 3 — `RenderWithRepair()`, `Concat()`, S3
+## Sprint 3 — Clip validation, `Concat()`, S3, smoke target
 
 (Budget: ~3.75 h.)
 
-**Goal:** the full path from "scene" to "video URL" works, including repair and stitching.
+**Goal:** `Render()` never reports a bad clip as success; clips stitch into one video on S3; anyone can run the container smoke test with one command.
 
-### Step 1 — `RenderWithRepair()` (1.5 h)
-`repair.go`: up to 3 attempts. Each attempt:
-```
-snippets := retrieve(scene, lastTracebackFirstLine)   // "" on the first attempt
-src       := codegen(scene, snippets, prevSrc, prevTraceback)
-clip, err := Render(ctx, src, workDir)
-```
-Success → return. Failure → record `prevSrc`, `prevTraceback`, try again. Third failure → return the error; P3 drops the scene. Log every attempt with the scene index, attempt number, and the traceback's first line — P1 will read these logs in Sprint 4.
+### Step 1 — Real clip validation (1 h)
+`validate.go`: after a container exits 0, `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate,duration -of json`. Fail (as `RenderError{Stage: "container", Traceback: "clip invalid: …"}`) if duration < 1 s, or width/height/fps don't match what the quality flag should produce (`-ql` → 854×480 @ 15 fps; `-qm` → 1280×720 @ 30 fps), or size < 20 KB. This is what stops a scene whose every `play()` silently failed from reaching `Concat`. Also: `Render` now takes `quality` — never read it from env inside the package.
 
-Test with a fake `codegen` that returns a broken sample on attempt 1 and a good one on attempt 2.
+### Step 1b — `make smoke` (30 min)
+A `Makefile` at the repo root with `smoke` (build the image if missing, run the SETUP §6.2 scene through it, print PASS/FAIL) and `render-test` (`go test ./server/internal/render/`). `docker/README.md` and `samples/README.md` point at it.
 
 ### Step 2 — `Concat()` (1 h)
 `concat.go`:
@@ -211,10 +208,11 @@ Test with a fake `codegen` that returns a broken sample on attempt 1 and a good 
 In `docker/README.md`: the real-S3 bucket needs a lifecycle rule expiring `renders/` after 14 days. MinIO locally doesn't. This sits behind the 7-day cache TTL so the cache never points at a deleted video.
 
 ### Done when
-- [ ] `RenderWithRepair` recovers from a deliberately broken first attempt.
+- [ ] A scene whose `play()` calls all silently fail (e.g. empty `construct`) is rejected by `validate.go`, not passed to `Concat`.
+- [ ] `make smoke` prints PASS on a clean checkout.
 - [ ] `Concat` joins 3 clips into one playable MP4 and refuses mismatched inputs.
 - [ ] A URL from `s3.go` plays in a browser.
-- [ ] P3 has wired all three into a real job and one capture produced a real video.
+- [ ] P3's `/internal/render` calls your `Render()`; P1's agent has rendered a real scene through it; one capture produced a real video.
 
 ---
 
