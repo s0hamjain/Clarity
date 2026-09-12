@@ -248,18 +248,36 @@ Flags: `-ql` 480p (dev) · `-qm` 720p (release) · `-o` filename · `--media_dir
 
 MinIO speaks the S3 API. Locally nobody needs AWS credentials; the same Go code talks to real S3 by changing `S3_ENDPOINT`.
 
+**As of Sprint 3, `minio/minio` on Docker Hub and the `mc` client's own download servers
+both return "no longer available."** MinIO moved the AGPL community image and dropped
+free `mc` binary distribution. Use `quay.io/minio/minio` for the server, and skip `mc`
+entirely — the bucket and its public-read policy are one-time setup, done here with
+`aws s3api` (or by hand in the console, no extra install).
+
 ```sh
 docker run -d --name minio -p 9000:9000 -p 9001:9001 \
     -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-    -v minio-data:/data minio/minio server /data --console-address ":9001"
-
-brew install minio/stable/mc
-mc alias set local http://localhost:9000 minioadmin minioadmin
-mc mb local/clarity-renders
-mc anonymous set download local/clarity-renders     # public-read, matches FRD §14.6
+    -v minio-data:/data quay.io/minio/minio server /data --console-address ":9001"
 ```
 
 Console: http://localhost:9001 (minioadmin / minioadmin).
+
+### Create the bucket and make it public-read
+
+**Option A — AWS CLI** (`pip install awscli` or `brew install awscli` if you don't have it):
+
+```sh
+export AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin
+aws --endpoint-url http://localhost:9000 s3 mb s3://clarity-renders
+aws --endpoint-url http://localhost:9000 s3api put-bucket-policy --bucket clarity-renders --policy '{
+  "Version": "2012-10-17",
+  "Statement": [{"Effect": "Allow", "Principal": {"AWS": ["*"]}, "Action": ["s3:GetObject"], "Resource": ["arn:aws:s3:::clarity-renders/*"]}]
+}'
+```
+
+**Option B — the console.** Open http://localhost:9001, log in, **Buckets → Create Bucket** named `clarity-renders`, then **Access Rules** (or **Anonymous Access** depending on the version) → add a `readonly` rule on prefix `*`.
+
+Either way, verify with `curl -I http://localhost:9000/clarity-renders/anything` — a `404` (not `403`) means the bucket is reachable and public-read is working; a real object at that key would 200.
 
 ---
 
@@ -465,7 +483,7 @@ Then `⌘⇧E`, drag a box around a problem, press Enter.
 | 3 | Docker running | `docker info` | no error |
 | 4 | `manim-worker` built | `docker images manim-worker` | one row |
 | 5 | Container renders LaTeX | §6.2 smoke test | `out.mp4` exists |
-| 6 | MinIO up + bucket public | `mc anonymous get local/clarity-renders` | `download` |
+| 6 | MinIO up + bucket public | `curl -I http://localhost:9000/clarity-renders/anything` | `404`, not `403` |
 | 7 | Atlas reachable | §5.7 ping | `{'ok': 1.0}` |
 | 8 | Vector index active | Atlas UI → Search Indexes | `snippets_vector` **Active** |
 | 9 | Voyage key works | §4 sanity check | `1024` |
@@ -485,7 +503,7 @@ Then `⌘⇧E`, drag a box around a problem, press Enter.
 - **Docker daemon not running** — Docker Desktop must be open, not just installed.
 - **`$vectorSearch` returns nothing** — index not yet **Active**, or `numDimensions` ≠ 1024, or every document is `verified: false`. Check `snippets_verified` in `/healthz`.
 - **Embeddings dimension mismatch on insert** — `EMBED_MODEL` changed. Drop and recreate the index, re-run the seed script.
-- **MinIO uploads succeed but the panel can't play the video** — bucket isn't public-read. `mc anonymous set download local/clarity-renders`.
+- **MinIO uploads succeed but the panel can't play the video** — bucket isn't public-read. Re-apply the bucket policy from §7 (Option A or B); confirm with the §7 `curl` check.
 - **`ffmpeg concat` fails** — codec mismatch between scenes. Confirm every scene in the job used the same `MANIM_QUALITY`.
 - **Hotkey does nothing** — Input Monitoring not granted to *this* terminal app, or you didn't restart it after granting. System Settings → Privacy & Security → Input Monitoring.
 - **`screencapture` produces no file and no crosshair** — Screen Recording not granted to this terminal app. Same fix.
