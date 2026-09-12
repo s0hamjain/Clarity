@@ -47,12 +47,14 @@ class Session:
         config: Config,
         notify: Notify | None = None,
         on_all_closed: Callable[[], None] | None = None,
+        on_guardrails: Callable[[bool], None] | None = None,
     ) -> None:
         self.config = config
         self.client = Client(lambda: self.config.server_url)
         self.recents = Recents()
         self._notify = notify or _no_notify
         self._on_all_closed = on_all_closed
+        self._on_guardrails = on_guardrails
 
         self._lock = threading.Lock()
         self._spotlight: Spotlight | None = None
@@ -123,14 +125,24 @@ class Session:
             on_pick_recent=self._pick_recent,
             on_blur=self._hide_overlay,
             on_focus=self._show_overlay,
+            on_guardrails=self._persist_guardrails,
             expanded=expanded,
+            guardrails=self.config.guardrails,
         )
         with self._lock:
             self._spotlight = spotlight
             self._pending = cap
         return spotlight
 
-    def _submit(self, user_prompt: str) -> None:
+    def _persist_guardrails(self, on: bool) -> None:
+        """Tutor mode is guardrails on; Answer mode is off. Written the moment
+        the user flips the toggle so the next capture and the menu stay in step."""
+        self.config.guardrails = bool(on)
+        log.info("guardrails = %s", self.config.guardrails)
+        if self._on_guardrails is not None:
+            self._on_guardrails(bool(on))
+
+    def _submit(self, user_prompt: str, guardrails: bool | None = None) -> None:
         """Write the recent, POST the job, then open its result box. Runs on the
         spotlight window's reader thread."""
         with self._lock:
@@ -148,11 +160,16 @@ class Session:
         # reaches the server still leaves the capture in recents.
         recent_id = self.recents.add(cap.data_url, question=user_prompt)
 
+        if guardrails is None:
+            guardrails = self.config.guardrails
+        else:
+            self._persist_guardrails(guardrails)
+
         try:
             job_id = self.client.create_job(
                 cap.data_url,
                 user_prompt=user_prompt,
-                guardrails=self.config.guardrails,
+                guardrails=guardrails,
             )
         except Unreachable:
             # FRD §19: notification, and the box stays open to retry.

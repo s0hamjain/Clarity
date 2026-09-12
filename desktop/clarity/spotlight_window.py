@@ -37,11 +37,11 @@ log = logging.getLogger(__name__)
 WIDTH = 680
 HEIGHT = 96
 
-PLACEHOLDER = "Add context… (why is my binary search not working? visualize where it's messing up)"
+PLACEHOLDER = "What's confusing you?"
 
 # Opened from the Recents menu item, or by pressing Esc at the crosshair: there
 # is no capture yet, so the field can't be submitted until a recent is picked.
-PLACEHOLDER_NO_CAPTURE = "Pick a recent screenshot (↓), or press ⌘⇧E to capture something new"
+PLACEHOLDER_NO_CAPTURE = "Pick a recent (↓)"
 
 # The list must not run off the bottom of the display. The window is centered,
 # so this is how much room is left below it (FRD §15.1 caps the list at 8 rows;
@@ -57,9 +57,9 @@ BOTTOM_MARGIN = 24
 class Spotlight:
     """One open spotlight box.
 
-    `on_submit(text)` runs on the window's reader thread and must answer with
-    `accept()` or `show_error()`. `on_close()` fires once, whether the user
-    cancelled, the submit went through, or the window died.
+    `on_submit(text, guardrails)` runs on the window's reader thread and must
+    answer with `accept()` or `show_error()`. `on_close()` fires once, whether
+    the user cancelled, the submit went through, or the window died.
 
     The two recents callbacks are FRD §15.1's two ways of using a row:
     `on_open_recent(id)` — the row has a result, so its result box reopens from
@@ -76,15 +76,17 @@ class Spotlight:
     def __init__(
         self,
         thumbnail: str | None,
-        on_submit: Callable[[str], None],
+        on_submit: Callable[..., None],
         on_close: Callable[[], None] | None = None,
         on_open_recent: Callable[[str], None] | None = None,
         on_pick_recent: Callable[[str], None] | None = None,
         on_blur: Callable[[], None] | None = None,
         on_focus: Callable[[], None] | None = None,
+        on_guardrails: Callable[[bool], None] | None = None,
         placeholder: str | None = None,
         expanded: bool = False,
         has_capture: bool | None = None,
+        guardrails: bool = False,
     ) -> None:
         # A thumbnail that couldn't be built is still a capture the box can
         # submit, so the caller gets to say so (`capture.thumbnail_data_url`
@@ -98,6 +100,7 @@ class Spotlight:
         self._on_pick_recent = on_pick_recent
         self._on_blur = on_blur
         self._on_focus = on_focus
+        self._on_guardrails = on_guardrails
         self._closed = threading.Event()
 
         self._proc = WindowProcess(
@@ -109,6 +112,7 @@ class Spotlight:
                 or (PLACEHOLDER if has_capture else PLACEHOLDER_NO_CAPTURE),
                 "has_capture": bool(has_capture),
                 "expanded": bool(expanded),
+                "guardrails": bool(guardrails),
             },
             self._handle,
             name="spotlight",
@@ -144,7 +148,10 @@ class Spotlight:
     def _handle(self, event: dict[str, Any]) -> None:
         kind = event.get("event")
         if kind == "submit":
-            self._on_submit(str(event.get("text") or ""))
+            self._on_submit(str(event.get("text") or ""), bool(event.get("guardrails")))
+        elif kind == "guardrails":
+            if self._on_guardrails is not None:
+                self._on_guardrails(bool(event.get("on")))
         elif kind == "open_recent":
             if self._on_open_recent is not None:
                 self._on_open_recent(str(event.get("recent_id") or ""))
@@ -177,8 +184,16 @@ class _JsApi:
         self.box = box
         self._max_height = HEIGHT
 
-    def submit(self, text: str) -> None:
-        window_host.emit("submit", text=str(text or "")[:2000])
+    def submit(self, text: str, guardrails: bool = False) -> None:
+        window_host.emit(
+            "submit",
+            text=str(text or "")[:2000],
+            guardrails=bool(guardrails),
+        )
+
+    def set_guardrails(self, on: bool = False) -> None:
+        """Tutor / Answer toggle. Tutor is guardrails on."""
+        window_host.emit("guardrails", on=bool(on))
 
     def cancel(self) -> None:
         window_host.emit("cancel")
@@ -292,6 +307,7 @@ def run_window(payload: dict[str, Any]) -> None:
                         "has_capture": bool(payload.get("has_capture", payload.get("thumbnail"))),
                         "expanded": bool(payload.get("expanded")),
                         "base_height": HEIGHT,
+                        "guardrails": bool(payload.get("guardrails")),
                     }
                 )
             ),

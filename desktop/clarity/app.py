@@ -59,7 +59,12 @@ class ClarityApp(rumps.App):
             log.debug("could not show the Dock icon", exc_info=True)
 
         self._capturing = threading.Lock()
-        self.session = Session(self.config, notify=self._notify, on_all_closed=self._on_idle)
+        self.session = Session(
+            self.config,
+            notify=self._notify,
+            on_all_closed=self._on_idle,
+            on_guardrails=self._sync_guardrails_menu,
+        )
         self._build_menu()
 
         self.hotkey = Hotkey(self.config.hotkey, self.on_hotkey)
@@ -161,6 +166,10 @@ class ClarityApp(rumps.App):
         sender.state = not sender.state
         self.config.guardrails = bool(sender.state)
         log.info("guardrails = %s", self.config.guardrails)
+
+    def _sync_guardrails_menu(self, on: bool) -> None:
+        """Keep the menu checkmark in step with the spotlight Tutor / Answer toggle."""
+        self.item_guardrails.state = bool(on)
 
     def on_server(self, _sender: rumps.MenuItem) -> None:
         win = rumps.Window(

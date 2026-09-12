@@ -19,9 +19,12 @@
   var thumb = document.getElementById("thumb");
   var message = document.getElementById("message");
   var hintRecents = document.getElementById("hint-recents");
+  var modeTutor = document.getElementById("mode-tutor");
+  var modeAnswer = document.getElementById("mode-answer");
   var listWrap = document.getElementById("list-wrap");
   var list = document.getElementById("list");
   var listEmpty = document.getElementById("list-empty");
+  var guardrails = false;
 
   /* Keep these in step with spotlight.css: one row, the list's padding, and
    * the hairline above it. The host clamps whatever height we ask for to what
@@ -72,6 +75,7 @@
     opts = opts || {};
     input.placeholder = opts.placeholder || "";
     baseHeight = opts.base_height || baseHeight;
+    setMode(!!opts.guardrails, false);
     setCapture(opts.thumbnail, opts.has_capture);
     input.focus();
     /* Opened from the Recents menu item, or by pressing Esc at the crosshair:
@@ -112,7 +116,7 @@
     setCapture(opts.thumbnail, true);
     collapse();
     input.value = "";
-    input.placeholder = "Add context… (now show me the fix)";
+    input.placeholder = "What's the question?";
     if (opts.note) showMessage(opts.note);
     else message.hidden = true;
     input.focus();
@@ -319,12 +323,21 @@
 
   /* ---------------------------------------------------------------- submit */
 
+  function setMode(on, notify) {
+    guardrails = !!on;
+    modeTutor.classList.toggle("is-on", guardrails);
+    modeAnswer.classList.toggle("is-on", !guardrails);
+    modeTutor.setAttribute("aria-checked", guardrails ? "true" : "false");
+    modeAnswer.setAttribute("aria-checked", guardrails ? "false" : "true");
+    if (notify) call("set_guardrails", guardrails);
+  }
+
   function callSubmit(text) {
     if (!apiReady) {
       pending = text;
       return;
     }
-    window.pywebview.api.submit(text);
+    window.pywebview.api.submit(text, guardrails);
   }
 
   function call(method) {
@@ -415,6 +428,17 @@
       if (expanded) collapse();
       else cancel();
     }
+  });
+
+  modeTutor.addEventListener("click", function (event) {
+    event.preventDefault();
+    if (!sending) setMode(true, true);
+    input.focus();
+  });
+  modeAnswer.addEventListener("click", function (event) {
+    event.preventDefault();
+    if (!sending) setMode(false, true);
+    input.focus();
   });
 
   /* Typing again after an error clears it; with the list open it filters. */
