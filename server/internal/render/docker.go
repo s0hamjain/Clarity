@@ -98,7 +98,7 @@ func Render(ctx context.Context, src string, workDir string, quality string) (st
 		return "", &RenderError{Stage: "container", Traceback: "failed to move rendered clip: " + err.Error()}
 	}
 
-	if verr := validateClip(clipPath); verr != nil {
+	if verr := validateClip(clipPath, quality); verr != nil {
 		return "", verr
 	}
 

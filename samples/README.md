@@ -58,3 +58,8 @@ open samples/media/videos/001_mathtex_side_by_side/480p15/out.mp4
 
 (`media/` is gitignored — delete it after watching, or leave it; it never gets
 committed.)
+
+`make smoke` (from the repo root) confirms the sandbox itself works before you doubt
+a sample. `make render-test` renders every file in this directory through the real
+`Render()` function, including the resolution/fps/size/duration checks a bad sample
+would fail.
