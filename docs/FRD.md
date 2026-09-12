@@ -69,11 +69,21 @@ The product is one macOS menu-bar app. It has no main window — it lives in the
 
 | Surface | Behavior |
 |---|---|
-| Menu bar icon | Always present while running. Shows idle / working state. Menu: **Capture** (same as the hotkey), **Recents**, **Guardrails** toggle, **Server…**, **Quit**. |
-| Hotkey | Global, default `⌘⇧E`. Triggers a region-select capture via `screencapture -i`. |
-| Spotlight box | A frameless, semi-transparent, blurred (macOS vibrancy) box centered on screen, ~680×96, opened the moment the capture finishes. Left: thumbnail of the capture. Right: a single text field — *"Add context… (why is my binary search not working? visualize where it's messing up)"*. **Enter** submits, **Esc** cancels. With the field empty, **↓** or typing `/` opens the **Recents** list below the box: the last 50 captures with thumbnail, transcribed problem text (once known), and time. Selecting a recent either reopens its result box (if a result exists) or loads that screenshot into the box so the user can ask a new question about it. |
-| Result box | A second frameless always-on-top box (~440×680, `pywebview`), appears when the job is accepted. Shows status in plain words, the explanation as rendered markdown the moment it exists, scene progress, then the video player when the video is ready. One result box per job; a new job replaces the previous box. |
-| Installer | A `.dmg` (drag to Applications) and optionally a `.pkg` that also installs a LaunchAgent so the app starts at login. |
+The user flow, in order:
+
+1. **Hotkey** `⌘⇧E` → crosshair → the user **drags a region** around the problem → screenshot taken.
+2. **Spotlight box animates in** (fade + scale, ~180 ms) — a clear, blurred, frameless box with the capture's thumbnail and one text field for context (*"why is my binary search not working? visualize where it's messing up"*). Optional. **↓** shows recent screenshots.
+3. **Enter** → spotlight box animates out → job submitted.
+4. **Result box appears** — a clear, frameless, always-on-top box. Explanation first (seconds), then the video (about a minute). **Drag it anywhere** by its background so it never blocks the problem.
+5. **X** (top-right) or **Esc** closes the result box. Done.
+
+| Surface | Definition |
+|---|---|
+| Menu bar icon | Always present. Idle / working state. Menu: **Capture**, **Recents**, **Guardrails**, **Server…**, **Clear Recents**, **Quit**. |
+| Hotkey | Global `⌘⇧E`. Region select via `screencapture -i`. Esc at the crosshair cancels. |
+| Spotlight box | Frameless · transparent · vibrancy · ~680×96 · centered. Thumbnail left, text field right. Enter submits, Esc cancels. Empty field + **↓** or `/` expands into the **Recents** list (last 50: thumbnail · problem text · time · video dot). Enter on a recent with a result reopens it; Enter/Tab on one without a result loads its screenshot for a new question. |
+| Result box | Frameless · transparent · vibrancy · always on top · ~440×680. Opens on job accept, near the spotlight box's position. **Draggable anywhere** (whole background is a drag handle; the video and text are not). Status line → explanation (markdown) → scene progress → video. **X** top-right and **Esc** close it. Each job gets its own box; boxes stack offset so several can be open. |
+| Installer | `.dmg` (drag to Applications); optional `.pkg` with a LaunchAgent for start at login. |
 
 **Why a desktop app, not a browser extension:** an extension sees one tab's visible viewport and refuses on `chrome://` pages. The desktop app sees everything — PDFs, IDEs, slides — and region select means the user chooses exactly what leaves the machine.
 
@@ -483,10 +493,10 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | Hotkey | `⌘⇧E` by default, via `pynput.keyboard.GlobalHotKeys`. Debounced (2 s). Also available as a menu item. |
 | Capture | `screencapture -i -x <tmp>.png`. Esc cancels (exit code 1, no file) → abort silently. |
 | Image prep | `Pillow` downscales to ≤ 1568 px on the longest side (Claude's sweet spot; keeps retina captures under the 8 MB cap). Encoded as PNG data URL. |
-| Spotlight box | `pywebview.create_window(frameless=True, transparent=True, vibrancy=True, on_top=True, easy_drag=False)`, ~680×96, centered on the display the cursor is on, loads `ui/spotlight/index.html`. Input focused on open. **Enter** submits, **Esc** cancels and closes. Thumbnail of the capture on the left. |
+| Spotlight box | `webview.create_window(frameless=True, transparent=True, vibrancy=True, on_top=True, easy_drag=False)`, ~680×96, centered on the display the cursor is on, loads `ui/spotlight/index.html`. **Animates in**: opacity 0→1 and scale 0.96→1 over 180 ms `ease-out`, CSS only. Input focused on open. **Enter** submits (animates out 120 ms, then closes), **Esc** cancels. Thumbnail of the capture on the left. |
 | Recents in the box | With an empty field, **↓** or `/` expands the box downward into a list (max 8 visible, scroll for 50): thumbnail · problem text or "Untitled capture" · relative time · a dot if a video exists. **Enter** on a recent with a result → open its result box. **Enter** on a recent without one, or **Tab** on any recent → load that screenshot into the box for a new question. Typing with the list open filters by problem text. |
 | Submit | `POST /api/jobs` with `source: "desktop"` and the current guardrails setting. Write the recent immediately (before the response) so a failed submit is still visible in recents. On connection failure: notification "Can't reach the server", spotlight box stays open. |
-| Result box | `pywebview` window, ~440×680, `frameless=True, on_top=True, vibrancy=True`, appears when the job ID comes back, loads `ui/result/index.html?job=&server=`. Polls every 1 s. Draggable by its header. Close button. A new job closes the previous result box. |
+| Result box | `webview.create_window(frameless=True, transparent=True, vibrancy=True, on_top=True, easy_drag=True)`, ~440×680, opens where the spotlight box was, loads `ui/result/index.html?job=&server=`. Polls every 1 s. **Draggable anywhere**: `easy_drag=True` makes the whole window a drag handle; `<video>`, links, and selectable text opt out with `class="pywebview-drag-region"` *not* applied. **X** top-right → `window.close()`; **Esc** does the same. Each job opens its own box, offset 24 px from the last so several can stay open. Fade-in 150 ms. |
 | Result content | Status line in plain words ("Reading the problem…", "Writing explanation…", "Rendering scene 2 of 3…", "Done"). Explanation rendered from markdown (`marked.min.js`, bundled — no CDN). `<video controls autoplay muted>` when `video_url` arrives. `done` with null video → explanation + quiet note. 180 s timeout → message + retry. Every poll that adds `problem_text`, `explanation`, or `video_url` updates the local recent. |
 | Reopen from recents | If the local recent has `explanation`/`video_url`, render from local data first, then poll `GET /api/jobs/{id}` once; a `404` is fine — the local copy is the source. |
 | Notification | macOS notification when the explanation lands, so the user doesn't have to watch the window. |
@@ -513,9 +523,9 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 4. Menu bar icon appears. `⌘⇧E` is live.
 
 ## 16.2 Capture
-1. User presses `⌘⇧E` on any screen. Crosshair appears. User drags a box around the problem.
-2. The spotlight box appears with the capture's thumbnail. User types context — or presses ↓ to pick a recent screenshot instead — and presses Enter.
-3. The spotlight box closes; the result box opens with "Reading the problem…".
+1. `⌘⇧E` → crosshair. User **drags a region** around the problem. Esc cancels.
+2. Spotlight box **animates in** with the thumbnail. User types context (optional) — or ↓ to pick a recent — and presses **Enter**.
+3. Spotlight box animates out. Result box opens: "Reading the problem…".
 
 ## 16.3 Explain
 1. Coordinator returns a job ID immediately and starts the pipeline.
@@ -528,6 +538,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 2. The result box shows "Rendering scene k of N…" as `scenes_done` advances.
 3. Successful clips are concatenated and uploaded. `cache` is written. Successful sources are ingested as unverified snippets.
 4. The result box plays the video. Job is `done`. The local recent gets `video_url`.
+5. User **drags the box** off the problem if it's in the way, watches, and clicks **X** when done.
 
 ## 16.5 Re-ask
 1. User presses `⌘⇧E`, then **Esc** at the crosshair (or opens **Recents** from the menu). The spotlight box opens with no fresh capture and the recents list expanded.
@@ -563,6 +574,9 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | F43 | Selecting a recent with a result reopens its result box from local data, even if the server job has expired. | Should |
 | F44 | Selecting a recent without a result, or Tab on any recent, loads its screenshot into the spotlight box for a new question. | Should |
 | F45 | Recents are capped at 50 and can be cleared from the menu bar. | Could |
+| F46 | The spotlight box animates in (fade + scale, ~180 ms) and out on submit. | Should |
+| F47 | The result box is draggable anywhere by its background so it can be moved off the problem. | Must |
+| F48 | The result box has an X (and Esc) that closes it. Several result boxes can be open at once, offset. | Must |
 
 ### Installer
 | # | Requirement | Priority |
