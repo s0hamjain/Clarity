@@ -18,7 +18,11 @@ import (
 // /vision is one model call, /scenes/render is three render attempts with
 // repair — so each call sets its own rather than sharing one client timeout.
 const (
-	VisionTimeout       = 30 * time.Second
+	// 45s, not 30s: the agent's own Gemini call budget is 20s + 1 retry on
+	// 5xx/429 = 40s worst case (API.md §7). 30s was less than that, so a slow
+	// Gemini call timed out here first and surfaced as a generic internal
+	// error instead of the agent's real model_error.
+	VisionTimeout       = 45 * time.Second
 	ExplainTimeout      = 90 * time.Second
 	ScenesRenderTimeout = 11 * time.Minute
 )

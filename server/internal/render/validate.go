@@ -10,9 +10,17 @@ import (
 	"strings"
 )
 
-// minClipBytes is the floor below which a clip is almost certainly empty of
-// real content, whatever its reported duration or resolution say.
-const minClipBytes = 20 * 1024
+// minClipBytes is a corruption/truncation guard only, not a content-richness
+// gate. It used to be 20 KB on the theory that a tiny file meant every
+// play() silently failed — but a real, correctly-rendered MathTex("x^2")
+// comes out at 8,818 bytes (confirmed against a real render), and a
+// completely blank scene (`self.wait(2)`, nothing drawn) still comes out at
+// 6,135 bytes over a real 2-second duration. Those two numbers are too close
+// for absolute size to tell sparse-but-real apart from empty — duration and
+// resolution/fps below are the checks that actually catch a silently-failed
+// scene (FRD's own repair-loop failures render in well under 1 second). This
+// floor only exists to catch a genuinely truncated or empty output file.
+const minClipBytes = 1024
 
 // qualitySpec is what a quality flag's output must measure as. Confirmed
 // against real manim-worker renders, not assumed from the docs.
@@ -47,7 +55,7 @@ func validateClip(path string, quality string) *RenderError {
 	if info.Size() < minClipBytes {
 		return &RenderError{
 			Stage:     "container",
-			Traceback: fmt.Sprintf("clip invalid: only %d bytes — every play() likely failed silently", info.Size()),
+			Traceback: fmt.Sprintf("clip invalid: only %d bytes — likely truncated or empty output", info.Size()),
 		}
 	}
 

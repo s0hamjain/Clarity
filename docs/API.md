@@ -449,7 +449,7 @@ Desktop                Coordinator                    Agent                     
 | `user_prompt` length | 2000 chars | Coordinator, `400` |
 | Job queue depth | 32 | Coordinator, `503 queue_full` |
 | Concurrent renders | `RENDER_CONCURRENCY` (default `NumCPU/2`) | Coordinator semaphore |
-| Coordinator → `/vision` | 30 s | Coordinator client |
+| Coordinator → `/vision` | 45 s | Coordinator client |
 | Coordinator → `/explain` | 90 s (draft + critique + possible revise) | Coordinator client |
 | Coordinator → `/scenes/render` | 11 min (3 × (generate + render) + retrieval) | Coordinator client |
 | Agent → `/internal/render` | 130 s per call | Agent render tool |
@@ -466,6 +466,14 @@ Desktop                Coordinator                    Agent                     
 | Job record TTL | 24 h | Atlas TTL index |
 | Cache entry TTL | 7 d | Atlas TTL index |
 | Video on S3 | 14 d | Bucket lifecycle |
+
+**Coordinator client timeouts must exceed the agent-side budget they wrap, with margin.**
+`Coordinator → /vision` (45 s) covers `Agent → Gemini (/vision)`'s worst case (20 s + 1 retry = 40 s)
+with a 5 s margin for network/processing overhead. It was previously 30 s, which was *less* than
+the 40 s the agent could legitimately take — the coordinator's HTTP client would time out first,
+so a slow Gemini call surfaced as a generic `internal` error instead of the agent's real
+`model_error`. Check this arithmetic (agent budget × retries, plus margin) whenever either side's
+number changes.
 
 ---
 

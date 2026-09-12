@@ -133,6 +133,40 @@ class GeneratedScene(Scene):
 	}
 }
 
+// TestRenderAcceptsSparseButRealScene is the regression test for a real false
+// positive: a correctly-rendered MathTex("x^2") comes out at 8,818 bytes —
+// under the old 20 KB floor, which rejected it even though it's a completely
+// valid render (confirmed against a real render: 854x480@15fps, 2s duration,
+// 2 real animations played). Storyboard scenes are often one short formula,
+// so this used to drop good scenes in production.
+func TestRenderAcceptsSparseButRealScene(t *testing.T) {
+	if !dockerAvailable(t) {
+		return
+	}
+	src := `from manim import *
+
+
+class GeneratedScene(Scene):
+    def construct(self):
+        t = MathTex(r"x^2")
+        self.play(Write(t))
+        self.wait(1)
+`
+	workDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	clipPath, rerr := Render(ctx, src, workDir, "-ql")
+	if rerr != nil {
+		t.Fatalf("expected a sparse-but-real scene to be accepted, got: stage=%s traceback=%s", rerr.Stage, rerr.Traceback)
+	}
+	info, err := os.Stat(clipPath)
+	if err != nil {
+		t.Fatalf("clip missing at %s: %v", clipPath, err)
+	}
+	t.Logf("accepted a %d-byte clip", info.Size())
+}
+
 // TestRenderTimeoutKillsContainer proves the container is actually killed on
 // timeout, not just the docker CLI process (FRD §23 rule 15). Passes a short
 // deadline instead of waiting the real 120s — Render's internal timeout
