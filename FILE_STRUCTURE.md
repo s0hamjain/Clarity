@@ -136,13 +136,20 @@ server/
     ├── api/                        # P3
     │   ├── handlers.go             # POST /api/jobs, GET /api/jobs/{id}, DELETE, GET /api/cache/{hash}, GET /healthz — FRD §11
     │   ├── internal_render.go      # POST /internal/render — localhost only; semaphore → precheck → render.Render() (agent's tool)
-    │   └── cors.go                 # Access-Control-Allow-Origin: * on every route incl. 404/5xx
+    │   ├── errors.go               # The one error envelope + the code constants — API.md §4
+    │   ├── health.go               # Cached dependency checks behind /healthz; refreshed at boot and every 60 s
+    │   ├── cors.go                 # Access-Control-Allow-Origin: * on every route incl. 404/5xx; X-Request-Id echo/generate
+    │   └── handlers_test.go        # Status codes, the error envelope, CORS, and the exact GET /api/jobs/{id} field set
     │
-    ├── store/                      # P3 · MongoDB Atlas
-    │   ├── mongo.go                # Client, database handle
+    ├── config/                     # P3 · env → Config (FRD §22), read once at boot
+    │   └── config.go               # Defaults, validation; UsesAtlas(); the FAKE_AGENT / FAKE_RENDER flags
+    │
+    ├── store/                      # P3 · MongoDB Atlas; implements the interfaces in jobs/store.go
+    │   ├── mongo.go                # Client, database handle, Ping for /healthz
     │   ├── jobs.go                 # Create/Get/Update — every Update sets updated_at
     │   ├── cache.go                # Get/Put by problem_hash
-    │   └── indexes.go              # TTL indexes on jobs.updated_at (24 h) and cache.created_at (7 d), idempotent
+    │   ├── indexes.go              # TTL indexes on jobs.updated_at (24 h) and cache.created_at (7 d), idempotent
+    │   └── memory.go               # In-memory stand-in so the fully faked server needs no Atlas. Deleted with the flags in Sprint 4.
     │
     ├── cache/                      # P3
     │   ├── key.go                  # PromptVersion const · Normalize() · Hash() — FRD §12
@@ -152,9 +159,12 @@ server/
     │   └── client.go               # Typed HTTP client for FRD §10; strips data-URL prefix; per-endpoint timeouts
     │
     ├── jobs/                       # P3
-    │   ├── job.go                  # Job struct = FRD §9.1; status enum
+    │   ├── job.go                  # Job struct = FRD §9.1; status enum; RFC 3339 wire shape
+    │   ├── store.go                # The Store / CacheStore interfaces the worker consumes; store/ implements them
     │   ├── worker.go               # vision → hash → cache? → explain → write explanation → fan out → concat → upload → done
-    │   └── scenes.go               # Per-scene work_dir + goroutine calling agent POST /scenes/render; defer recover(); scenes_done
+    │   ├── scenes.go               # Per-scene work_dir + goroutine calling agent POST /scenes/render; defer recover(); scenes_done
+    │   ├── fake.go                 # Hardcoded /vision and /explain stand-ins for FAKE_AGENT. Deleted in Sprint 4.
+    │   └── worker_test.go          # The status walk; rule 8 ordering; rule 10 (no cache on a failure path); cancel
     │
     └── render/                     # P2 · the boundary with P3 is Render / Concat / Semaphore in FRD §14.1
         ├── precheck.go             # python ast.parse; banned imports/calls; requires class GeneratedScene(Scene)
