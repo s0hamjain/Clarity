@@ -1,0 +1,14 @@
+langgraph
+langchain-core
+langchain-google-genai
+langchain-anthropic
+langchain-mongodb
+langchain-voyageai
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+pymongo[srv]
+python-dotenv
+httpx
+pillow
