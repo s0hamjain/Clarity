@@ -31,3 +31,8 @@ build/
 *.spec
 *.dmg
 *.pkg
+
+# desktop app
+desktop/.venv/
+desktop/dist/
+desktop/build/
