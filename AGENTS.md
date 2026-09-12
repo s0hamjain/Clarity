@@ -1,133 +1,163 @@
-# Ambient visual learning tool
+# AGENTS.md — Ambient Visual Learning Tool
 
-**Start here.** This is the project index — what the system does, how its
-pieces fit together, and where to look for detail on any of it.
+This file is the single point of entry for anyone — person or coding agent — working on this project. Read it in full before writing any code. It says what the project is, where the authoritative details live, what rules must never be broken, and what every sprint requires of every person.
 
-## The idea
+---
 
-A student is stuck on a hard math or algorithm problem in their browser. They
-hit a hotkey. A side panel opens with an optional question field and a
-guardrails toggle, and within seconds they get a written, step-by-step
-explanation of the problem. About a minute later, a custom animated video
-arrives in the same panel, walking through the same problem visually —
-generated fresh for that specific problem, not pulled from a library of
-pre-made clips.
+## 1. Project Summary
 
-For problems that aren't in a browser — code in an IDE, a PDF on the desktop —
-the same experience is available as a web app: paste or drop a screenshot
-instead of using the hotkey.
+The Ambient Visual Learning Tool is a macOS desktop app that turns any math or algorithm problem on screen into a written explanation and a custom animated video. A student presses a hotkey, drags a box around the problem — in a PDF, an IDE, a browser, a slide — and a translucent Spotlight-style box appears where they can add context (*"why is my binary search not working? visualize where it's messing up"*) or pull up a recent screenshot to ask about again. A result box opens with a step-by-step written explanation within seconds. About a minute later an animated walkthrough of the same problem plays in that same box. The animation is generated for that specific problem: a model writes Manim code, grounded in retrieved examples of verified working Manim, and the system renders it.
 
-**Guardrails mode**, when enabled, changes what comes back: instead of
-solving the problem, the explanation and the video teach the method and stop
-short of the final answer.
+The stack is a **Python menu-bar desktop app** (`rumps`, `pynput`, `pywebview`, built into a `.app` with PyInstaller and distributed as a `.dmg`), a **Go coordinator** (public HTTP API, job lifecycle, cache, per-scene render orchestration), a **Python agent service** (FastAPI; every Claude call; Voyage AI embeddings; retrieval over MongoDB Atlas Vector Search), **MongoDB Atlas** (jobs, cache, and the Manim snippet corpus), **Docker** (one isolated `manim-worker` container per scene), **ffmpeg** (concatenation without re-encoding), and **S3** (MinIO locally) for finished videos.
 
-Two decisions shape everything downstream:
+Two decisions shape everything downstream. **The explanation is the product; the video is a reward that arrives after.** Rendering is slow and CPU-bound; the explanation is fast; they are delivered separately, the explanation the moment it exists. **The same problem is only rendered once.** Every transcribed problem is hashed with the user's question and the guardrails flag and checked against a cache before any work begins.
 
-- **The explanation is the product; the video is a reward that arrives
-  after.** Rendering an animation is slow and CPU-bound; producing the
-  written explanation is fast. Waiting for the video to show the explanation
-  would make a working system feel broken, so the two are delivered
-  separately — the explanation the moment it exists, the video once it's
-  ready.
-- **The same problem is only rendered once.** The system hashes each
-  transcribed problem together with the user's question and the guardrails
-  setting, and checks a cache before doing any work. A repeat of the same
-  request returns the existing video and explanation in under a second
-  instead of re-running the pipeline.
+The system has four subsystems, one per person: (1) the **agent service** — transcription, explanation and storyboard generation, snippet retrieval, code generation and repair, corpus ingest; (2) the **render pipeline** — the Docker image, verified seed scenes, static pre-check, per-scene container rendering with a repair loop, ffmpeg concat, S3 upload; (3) the **coordinator** — the HTTP API the desktop app talks to, the Atlas job store and cache, fanning scenes out concurrently and joining them back; (4) the **desktop app and installer** — hotkey, region capture, the spotlight box with recents, the result box, and the build that turns it into something a user downloads.
 
-## How a request flows, end to end
+Four people work in parallel across five sprints. Everyone works on their own branch until the end of a sprint, then everyone's work is merged together at a sync point with a fixed merge order and a rotating merge captain. Every path fakes its dependencies until the real thing lands, so nobody is ever blocked.
 
-1. **Capture.** The user hits the hotkey (or pastes a screenshot in the web
-   app). The client sends the image, the optional question, and the
-   guardrails flag to the coordinator.
-2. **Acknowledge.** The coordinator creates a job, returns a job ID
-   immediately, and does everything below in the background.
-3. **Read the problem.** A model call transcribes the screenshot to verbatim
-   problem text and a category (math or algorithm).
-4. **Check the cache.** The coordinator hashes the text, the question, and
-   the guardrails flag. On a hit, it returns the cached video and
-   explanation immediately and stops here.
-5. **Explain.** On a miss, a model call produces the written explanation and
-   a storyboard of 2–5 short animation scenes. The explanation is written to
-   the cache and handed to the client the moment it exists — this is the
-   point where the user stops waiting.
-6. **Generate and render, per scene, in parallel.** For each scene: a model
-   call retrieves relevant reference snippets from a Manim documentation
-   corpus, then another turns the scene into Manim source code. The
-   coordinator runs that code in its own isolated container. A scene that
-   fails is sent back for repair, with the error, up to three times,
-   independently of the other scenes.
-7. **Join and store.** Once every scene has finished (or given up), the
-   coordinator joins the successful clips into one video, uploads it to
-   object storage, and writes the URL to the cache and the job record.
-8. **Deliver.** The client, still polling the job, picks up the finished
-   video and plays it inline.
+---
 
-If every scene fails, the job still completes with the explanation shown and
-a note that the animation didn't render — the explanation never depends on
-rendering succeeding.
+## 2. Document Reference
 
-## Architecture
+There are three authoritative documents plus this file and the file map. Always consult the relevant one before implementing. Never guess at a schema, endpoint, index definition, or configuration value — look it up.
 
-```
-Client (browser extension panel, or web app)
-        │  HTTP
-        ▼
-Coordinator ────────────────► Agent service ────────────► Claude API
-(job queue, cache,             (every model call:
- per-scene fan-out,              transcription, explanation,
- render dispatch,                doc retrieval, codegen)
- repair loop)
-        │
-        ├──► Cache / job store        (problem hash → video + explanation)
-        ├──► Isolated render workers  (one container per scene)
-        ├──► Video join               (no re-encoding — every scene shares
-        │                              one resolution and frame rate)
-        └──► Object storage           (finished videos, served directly
-                                        to the client)
-```
+### docs/FRD.md (the technical specification)
 
-- **The agent service** owns every call to the model: transcription,
-  explanation and storyboard generation, documentation retrieval, and code
-  generation. Nothing else talks to the model API.
-- **The coordinator** owns everything else: the job lifecycle, the cache, the
-  per-scene fan-out and repair, joining clips, and storage.
-- **The client** is the browser extension's side panel and a standalone web
-  app, sharing one UI implementation between them.
+The source of truth for every implementation detail. Section map:
 
-## Components
+- **§1–5 Product** — what it is, goals and non-goals, users, success criteria, the product surface (menu bar app, hotkey, spotlight box, recents, result box, installer).
+- **§6 Core Architecture** — the four components and the flow between them, with the two load-bearing decisions.
+- **§7 Technology Stack** — every library and service with its role.
+- **§8 Data and Storage** — what lives in Atlas vs S3 and for how long, and why the S3 lifetime is longer than the cache TTL.
+- **§9 Database Schema** — exact documents for `jobs`, `cache`, `manim_snippets`; TTL indexes; the `snippets_vector` Vector Search index JSON.
+- **§10 Agent Service API** — exact request/response for `/vision`, `/explain`, `/snippets/search`, `/codegen`, `/snippets/ingest`, `/healthz`; model configuration; the determinism decision.
+- **§11 Coordinator API** — `POST /api/jobs`, `GET /api/jobs/{id}` with the full status table, `/healthz`, video delivery.
+- **§12 Cache Key** — the exact hash, `normalize()`, `PromptVersion`.
+- **§13 RAG Design** — why retrieval, the corpus (seed / docs / generated), the pipeline, the rules.
+- **§14 Render Pipeline** — fan-out, the three Go function signatures, pre-check, Docker invocation, concat, post-render ingest, storage.
+- **§15 Desktop App and Installer** — runtime behavior table (spotlight box, recents, result box) and build/installer artifact table.
+- **§16 End-to-End Flow** — install, capture, explain, render, re-ask from recents, degrade.
+- **§17 Feature Requirements** — F1–F45, by component, with priority.
+- **§18 Non-Functional** — latency, concurrency, isolation targets.
+- **§19 Error Handling** — every failure and its behavior.
+- **§20 Security** — where secrets live and don't, sandboxing, image handling.
+- **§21 MVP vs Stretch** — what must ship.
+- **§22 Environment Variables** — complete `.env` templates.
+- **§23 Key Implementation Rules** — 21 rules that must never be violated. Read them before any code.
+- **§24 Open Questions** — each with an owner and a deadline.
 
-| Component | Responsibility | Detail |
-|---|---|---|
-| `agent/` | Every model call: transcription, explanation, doc retrieval, codegen | [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md#agent--python-all-claude-calls--manim-doc-retrieval) |
-| `render/` | Isolated per-scene rendering, repair, joining clips, upload | [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md#render--go-docker-dispatch-repair-loop-ffmpeg-s3) |
-| `server/` | Public API, job lifecycle, cache, orchestration | [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md#server--go-http-api-redis-job--scene-orchestration) |
-| `client/` | Extension panel and web app | [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md#client--angular-extension-panel--web-app) |
+### docs/SETUP.md
 
-The exact shapes each component builds against — every JSON payload and HTTP
-route — are in [CONTRACTS.md](CONTRACTS.md). Read it before writing code that
-crosses a component boundary; if it needs to change, change it there first.
+Full environment setup: prerequisites, clone and branch strategy, Anthropic and Voyage API keys, MongoDB Atlas cluster and Vector Search index creation, Docker and the `manim-worker` build with a container smoke test, MinIO, the agent service, the coordinator, the desktop app in development mode with the macOS permission dance, building the `.app`/`.dmg`/`.pkg`, environment files, running everything, a 15-point verification checklist, and common problems.
 
-## Open questions
+### docs/WORK_SPLIT.md
 
-- **Transcription determinism.** The cache only works if repeat screenshots
-  of the same problem hash the same way. Options in
-  [CONTRACTS §1](CONTRACTS.md#1-python-agent-service-internal).
-- **Manim-doc retrieval quality.** Depends on the embedding approach chosen —
-  see the same section.
-- **Does guardrails mode actually withhold the answer?** It's a prompt
-  instruction, not an enforced filter, so it needs verification against real
-  output, not just a prompt review.
-- **Privacy.** The screenshot captures the whole visible tab and is sent to a
-  third-party API and stored in object storage. There's no crop step and no
-  retention policy beyond the cache TTL.
+Four paths (P1 agent, P2 render, P3 coordinator, P4 desktop) across five sprints with a sync point after each. Contains the path overview and what each fakes; per-sprint, per-person steps with FRD references; sync-point checklists; the **Merge Protocol** (branch naming, rebase-before-sync, merge order P3 → P1 → P2 → P4, rotating captain, tagging); file ownership; and the dependency graph with mitigations.
 
-## The docs
+### FILE_STRUCTURE.md
 
-| File | What it's for |
+The complete directory tree with every file's purpose annotated, and the one-path-one-directory rule.
+
+---
+
+## 3. Mandatory Rules
+
+From FRD §23. Violations cause silent cache poisoning, hung jobs, broken concat output, or generated code running on the host.
+
+### Agent service (P1)
+1. Every response uses structured outputs. Never parse prose for JSON. Never use assistant prefill. Never pass `temperature` to Opus 5.
+2. The `/vision` prompt contains no instruction to interpret, summarize, or contextualize. Verbatim only. This string is hashed.
+3. `/codegen` asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)` before returning.
+4. Retrieval filters on `verified: true` in every code path. No flag disables it.
+5. Index and query use the same `EMBED_MODEL`. Changing it means re-running the seed script against a recreated index.
+6. `/codegen` uses `client.messages.stream()` — output can be long.
+
+### Coordinator (P3)
+7. `POST /api/jobs` writes the job and returns. Everything else runs in a goroutine with `defer recover()`.
+8. `explanation` is written to `jobs` before any `/snippets/search` or `/codegen` call. This is the most important line in the server.
+9. Every `jobs` write sets `updated_at = now`, or the TTL index deletes the job mid-render.
+10. `cache` is written only after upload succeeds. Never on any failure path.
+11. The cache-hit path never calls `/explain`.
+12. The manim quality flag is one job-level value passed identically to every scene. Concat depends on it.
+13. `PromptVersion` is bumped in the same commit as any prompt change, in any component.
+
+### Render pipeline (P2)
+14. The static pre-check runs before every `docker run`, including repair attempts.
+15. Every `docker run` has `--network none`, `--memory`, `--cpus`, and a context timeout that kills the container.
+16. A scene failure never propagates to sibling scenes. A scene that exhausts repair is dropped; the job continues.
+
+### Desktop app (P4)
+17. No secrets in the app. Only `server_url` and preferences.
+18. Poll every 1 s, give up at 180 s, render `explanation` on the first non-null poll regardless of status.
+19. Every network error becomes a notification or a message in the result box. Never an unhandled exception.
+20. `ui/` loads nothing from the network except `video_url`. `marked.min.js` is bundled.
+21. A recent is written to disk before `POST /api/jobs` and updated on every poll that adds data. Reopening a recent never depends on the server.
+
+---
+
+## 4. Operating Protocol
+
+### Step 1 — Read before you write
+Every task in WORK_SPLIT.md carries an FRD reference. Open it and read the section in full. The FRD has the exact JSON, the exact index definition, the exact flags. Do not improvise where it has an answer.
+
+### Step 2 — Plan before you implement
+1. **Which files?** List them. Check File Ownership in WORK_SPLIT.md. If a file belongs to another path, coordinate first.
+2. **Inputs and outputs?** For an endpoint: request schema, response schema, status codes. For a Go function: signature from FRD §14.1. For the result box: which job fields it reads and which it writes back to the local recent.
+3. **Dependencies?** If another path's piece isn't ready, use the fake named in WORK_SPLIT.md → "What each path fakes." Do not wait.
+4. **Failure modes?** FRD §19 lists them. Handle every one that applies.
+5. **Verification?** Define the check before writing. The sync-point checklist is the minimum.
+
+### Step 3 — Implement incrementally
+Small, testable steps. Verify each before the next. The render pipeline and the permission prompts in particular punish 500-line first drafts.
+
+### Step 4 — Inspect before pushing
+- Shapes match the FRD exactly (field names, status strings, index dims).
+- No rule in §3 is violated.
+- Secrets are in `.env`, gitignored, and not in the desktop app.
+- The branch is rebased on `origin/main` and your own tests pass.
+
+### Step 5 — Merge only at the sync point
+Follow WORK_SPLIT.md → Merge Protocol. Order P3 → P1 → P2 → P4. The captain tags. Then everyone branches fresh from `main`.
+
+---
+
+## 5. Sprint and Task Reference
+
+Every task is specified in `docs/WORK_SPLIT.md`. This table is the index.
+
+| Sprint | Hours | Goal | P1 — Agent | P2 — Render | P3 — Coordinator | P4 — Desktop |
+|---|---|---|---|---|---|---|
+| **1 Foundation** | 0–3 | Every path runs on fakes; risky assumptions tested | Skeleton, Atlas + Voyage + Claude clients, real `/vision`, collision experiment | `manim-worker` image + container smoke test, 5 watched seed scenes, `precheck.go` | HTTP skeleton, Atlas job store with TTL indexes, fake status-walking worker, cache key + test | Permissions, `rumps` app, hotkey + `screencapture -i` + downscale, transparent-window spike, stub coordinator |
+| **2 Vertical slice** | 3–7 | Real capture → real explanation in the real result box | `/explain`, seed script + `snippets_vector`, `/snippets/search`, `/snippets/ingest`, determinism decision | `Render()` against Docker with timeout + validation, semaphore, `render_test.go`, corpus to 20 | Agent client, real worker through `/explain` with immediate explanation write, cache hit path, fan-out skeleton | Spotlight box (translucent, frameless), result box with markdown + progress, real submit + notification, point at real coordinator |
+| **3 Real render** | 7–11 | One capture → real video, every codegen prompt grounded in retrieved snippets | `/codegen` with snippets, repair path, retrieval ablation | `RenderWithRepair`, `Concat` with mismatch guard, S3 upload | Real `SceneFunc`, concat → upload → cache → done, post-render ingest, real `/healthz` | Video playback, recents store + recents list in the spotlight box, reopen from local data, all failure states, guardrails toggle wired |
+| **4 Cache, guardrails, installer** | 11–15 | Survives real use; someone else can install it | Guardrails pass rate ≥ 8/10, promote/delete generated snippets, prompt tuning + `PromptVersion` | Cleanup on every exit path, timeout kills containers, `-qm` path, seeds for reported error classes | Two-machine cache test, failure injection, `503` on overload | Self-signed cert, `build_app.sh`, `build_dmg.sh`, install on a second Mac, permission persists across rebuild |
+| **5 Freeze + release** | 15–19 | Everything together; tagged release with installer | Freeze prompts, pre-warm cache | `-qm` release, clean-machine image build | All-green `/healthz` from fresh boot | `build_pkg.sh`, GitHub Release `v0.1.0` with DMG/PKG, install from the release URL |
+
+Sync-point checklists are in WORK_SPLIT.md under each sprint.
+
+---
+
+## 6. Quick Navigation
+
+| I need to... | Read... |
 |---|---|
-| [CONTRACTS.md](CONTRACTS.md) | Every JSON shape and HTTP route, and the render pipeline's internals |
-| [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md) | What each component owns, exposes, and mocks; what "done" looks like |
-| [docs/SETUP.md](docs/SETUP.md) | Install and run everything locally |
-| [docs/FRD.md](docs/FRD.md) | Functional requirements |
-| [FILESTRUCTURE.md](FILESTRUCTURE.md) | Directory layout |
+| Understand what this is | §1 above; FRD §1–6 |
+| Find where a file goes | FILE_STRUCTURE.md |
+| Look up an agent endpoint shape | FRD §10 |
+| Look up the public API or a status value | FRD §11 |
+| Look up an Atlas document or index | FRD §9 |
+| Understand the cache key | FRD §12 |
+| Understand retrieval and the corpus | FRD §13 |
+| Look up the Go render signatures or the Docker command | FRD §14 |
+| Look up spotlight box, result box, recents, or installer behavior | FRD §15; FRD §16.5 for re-ask |
+| Check a rule before committing | §3 above; FRD §23 |
+| Find what happens on a failure | FRD §19 |
+| Find an environment variable | FRD §22; SETUP §12 |
+| Set up a service or key | SETUP §3–7 |
+| Grant macOS permissions or build the installer | SETUP §10–11 |
+| Find my tasks this sprint | §5 above; WORK_SPLIT.md → Sprint N → your path |
+| Merge at a sync point | WORK_SPLIT.md → Merge Protocol |
+| Find who owns a file | WORK_SPLIT.md → File Ownership Summary |
+| See what blocks whom | WORK_SPLIT.md → Dependency Graph |
+| See an unresolved decision | FRD §24 |
