@@ -94,6 +94,49 @@ about it, and only reports it when you ask via **Server…**.
 
 **Use Terminal.app, and keep using it.** When running from source, macOS grants Screen Recording and Input Monitoring to the *terminal application* that launched Python, not to Python. Granting in Terminal and then running from iTerm or VS Code's terminal means granting again. After each grant, **quit and reopen the terminal app**.
 
+### Building the app and the DMG
+
+```sh
+cd desktop && source .venv/bin/activate
+./scripts/build_app.sh          # → dist/Clarity.app  (~44 MB)
+./scripts/build_dmg.sh          # → dist/Clarity.dmg  (~24 MB)
+```
+
+Both are idempotent and take about a minute together. P3 packages `dist/Clarity.app`
+into the `.pkg` and publishes the `.dmg` — that hand-off is the built files in
+`dist/`, which is gitignored.
+
+**The signature is the point of the build, not a formality.** macOS keys the
+Screen Recording permission to the app's code signature, so an unsigned build
+gets a new identity every time and the user is asked again after every rebuild.
+`build_app.sh` signs with, in order: `$CODESIGN_IDENTITY`, a certificate named
+`Clarity Dev` (SETUP §11.1), or the only codesigning identity in your keychain.
+Any of them works — what matters is that it's the *same* one each time, because
+the requirement macOS remembers names the identity, not the build:
+
+```
+designated => identifier "com.clarity.app" and anchor apple generic
+               and certificate leaf[subject.CN] = "<your identity>"
+```
+
+`create-dmg` lays the window out by driving Finder over AppleScript, so the
+first `build_dmg.sh` on a machine raises **"Terminal wants to control Finder"**.
+Allow it, or the icons land wherever Finder likes and the background art won't
+line up.
+
+Three things about the bundle that don't apply when running from source — all
+handled in `scripts/build_app.sh`, all silent failures if you drop them:
+
+- `clarity/__main__.py` is PyInstaller's entry script, so it is compiled as
+  `__main__` with no parent package. Its imports are absolute for that reason;
+  relative ones raise `ImportError` in the bundle only.
+- pywebview ships its own JavaScript, and the PyInstaller hook that collects it
+  only fires on Windows. Without `--collect-data webview` every window opens
+  blank.
+- `create-dmg` makes whatever you hand it the root of the volume, so it gets a
+  staging directory containing only `Clarity.app`. Passing the `.app` itself puts
+  `Contents/` at the top level of the DMG.
+
 ### What granting looked like (Sprint 1 notes, macOS 26.5)
 
 On the dev Mac both permissions had already been granted to Terminal.app from
@@ -122,6 +165,27 @@ Enter handling will be verified inside the real menu-bar app in Sprint 2.
 Note for anyone testing pywebview windows: Ctrl+C does not stop them, because
 Cocoa owns the main thread. Close the window itself.
 
+### Does the signature keep the permission stable? (Sprint 4, FRD §24) — yes
+
+The open question was whether a self-signed certificate really keeps Screen
+Recording granted across rebuilds. It does, and the reason is visible in the
+signature: the requirement macOS stores names the *identity*, never the build.
+
+```
+designated => identifier "com.clarity.app" and anchor apple generic
+               and certificate leaf[subject.CN] = "…"
+```
+
+Two consecutive `build_app.sh` runs produce byte-identical requirements, so TCC
+sees the same app both times even though every file inside changed. Built and
+verified here with an existing **Apple Development** identity rather than a
+self-signed `Clarity Dev` root — either satisfies the requirement, and neither is
+notarized, so both still need one **Open Anyway** per install.
+
+An unsigned bundle has no requirement to match, which is the whole failure mode
+SETUP §11.1 is warning about: the permission resets on every rebuild and the app
+silently stops capturing.
+
 ### Layout
 
 | Path | What |
@@ -138,8 +202,10 @@ Cocoa owns the main thread. Close the window itself.
 | `clarity/spotlight_window.py` | The input box |
 | `clarity/result_window.py` | The output box |
 | `clarity/ui/` | The two windows' HTML, CSS and JS; vendored `marked.min.js` |
-| `assets/` | App icon, menu bar template icons |
-| `scripts/` | `build_app.sh`, `build_dmg.sh` (Sprint 4) |
+| `assets/` | App icon, menu bar template icons, the DMG background |
+| `scripts/build_app.sh` | PyInstaller → `dist/Clarity.app`, `LSUIElement`, code signature |
+| `scripts/build_dmg.sh` | `create-dmg` → `dist/Clarity.dmg` |
+| `scripts/make_dmg_background.py` | Draws `assets/dmg_background.png` |
 
 ### Why each window is its own process
 
