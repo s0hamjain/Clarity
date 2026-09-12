@@ -88,7 +88,7 @@ demo is noticeably better with it. **Could** = if there's time.
 | N3 | Concurrent renders are capped (the CPU-bound part). Number is a config knob; start at `runtime.NumCPU() / 2`. |
 | N4 | One bad scene cannot wedge a worker — every render has a hard timeout. |
 | N5 | Everything runs on one laptop for the demo. No cloud dependency except the Claude API. |
-| N6 | The whole system starts with one command per service (see [setup.md](setup.md)). |
+| N6 | The whole system starts with one command per service (see [SETUP.md](SETUP.md)). |
 
 ## Out of scope — for now
 

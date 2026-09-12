@@ -4,7 +4,7 @@ Four people, four lanes, four laptops. Each lane is one directory, one owner,
 and one set of things it fakes so it's never blocked on anyone else.
 
 Shapes at every boundary are in [../CONTRACTS.md](../CONTRACTS.md). The clock is
-in [../SPRINTS.md](../SPRINTS.md). Read both before starting.
+in [../AGENTS.md](../AGENTS.md). Read both before starting.
 
 **Owners: TBD** — fill in names here when you claim a lane.
 
@@ -97,7 +97,7 @@ The repair loop itself is **yours too** — `RenderWithRepair(ctx, storyboard, c
 
 ### What "done" looks like
 
-- **Sprint 1, before anything else:** LaTeX smoke test passes ([setup.md](setup.md) §5).
+- **Sprint 1, before anything else:** LaTeX smoke test passes ([SETUP.md](SETUP.md) §5).
 - `samples/product_rule_scenes.py` exists, renders, and uses relative positioning
   only. **You write this.** It doesn't exist. It's on the critical path because
   `agent/` needs it for the codegen prompt.

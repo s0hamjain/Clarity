@@ -6,17 +6,16 @@ stay true.
 
 ```
 HackCMU/
-├── agents.md                  ← start here
+├── AGENTS.md                  ← start here; also the clock, five cycles, demo Sat 4 PM
 ├── CONTRACTS.md               ← shapes at every boundary (draft)
-├── SPRINTS.md                 ← the clock, five cycles, demo Sat 4 PM
-├── filestructure.md           ← this file
+├── FILESTRUCTURE.md           ← this file
 ├── README.md
 ├── .gitignore
 │
 ├── docs/
-│   ├── frd.md                 ← functional requirements
-│   ├── setup.md               ← install + run everything
-│   └── work_split.md          ← four lanes, who owns what, what each fakes
+│   ├── FRD.md                 ← functional requirements
+│   ├── SETUP.md               ← install + run everything
+│   └── WORK_SPLIT.md          ← four lanes, who owns what, what each fakes
 │
 ├── samples/
 │   └── product_rule_scenes.py ← verified Manim reference; codegen cheatsheet seed
@@ -91,7 +90,7 @@ HackCMU/
   telling them; you'll both be pushing to `main`.
 - **`server/internal/render/` is the `render/` lane** even though it's inside
   `server/`. The boundary is the `Render()` function signature in
-  [docs/work_split.md](docs/work_split.md).
+  [docs/WORK_SPLIT.md](docs/WORK_SPLIT.md).
 - **`shared/` in `client/` is shared by two shells, not two lanes.** It's all
   `client/`.
 - Generated output (`renders/`, `media/`, `.venv/`, `.env`) is gitignored. Don't
