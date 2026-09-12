@@ -142,7 +142,8 @@ func newTestWorker(t *testing.T) (*Worker, *recordingStore, *recordingCache) {
 		t.Fatalf("config.Load: %v", err)
 	}
 	js, cs := newRecordingStore(), newRecordingCache()
-	w := NewWorker(cfg, js, cs, agent.New("http://127.0.0.1:1"), stubSceneFunc)
+	w := NewWorker(cfg, js, cs, agent.New("http://127.0.0.1:1"), stubConcat)
+	w.renderScene = stubSceneFunc
 	// Keep the fake pipeline fast; one second per status is for humans.
 	w.stepInterval = 2 * time.Millisecond
 	return w, js, cs
@@ -338,4 +339,13 @@ func strPtr(v any) *string {
 	}
 	s := v.(string)
 	return &s
+}
+
+// stubConcat stands in for P2's render.Concat: it reports a URL without
+// touching ffmpeg or S3, so pipeline tests measure the pipeline.
+func stubConcat(ctx context.Context, clipPaths []string, outKey string) (string, error) {
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	return "http://minio.test/clarity-renders/" + outKey, nil
 }

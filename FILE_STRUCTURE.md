@@ -139,7 +139,7 @@ server/
     │   ├── errors.go               # The one error envelope + the code constants — API.md §4
     │   ├── health.go               # Cached dependency checks behind /healthz; refreshed at boot and every 60 s
     │   ├── cors.go                 # Access-Control-Allow-Origin: * on every route incl. 404/5xx; X-Request-Id echo/generate
-    │   ├── fake_render.go          # Stands in for P2's render.Render until it lands. Deleted in Sprint 4.
+    │   ├── s3health.go            # Unauthenticated HEAD on the render bucket: exists AND public-read (FRD §14.6)
     │   ├── handlers_test.go        # Status codes, the error envelope, CORS, and the exact GET /api/jobs/{id} field set
     │   └── internal_render_test.go # Loopback-only; precheck gate; work_dir containment; semaphore 429
     │
@@ -168,9 +168,11 @@ server/
     │   ├── store.go                # The Store / CacheStore interfaces the worker consumes; store/ implements them
     │   ├── worker.go               # vision → hash → cache? → explain → write explanation → fan out → concat → upload → done
     │   ├── scenes.go               # Per-scene work_dir + goroutine calling agent POST /scenes/render; defer recover(); scenes_done
-    │   ├── fake.go                 # Canned /vision and /explain answers + the fake clip writer. Deleted in Sprint 4.
+    │   ├── fake.go                 # Canned /vision, /explain and concat stand-ins. Deleted in Sprint 4.
+    │   ├── scenefunc.go            # AgentSceneFunc: one POST /scenes/render per scene; validates the clip_path it gets back
     │   ├── worker_test.go          # The status walk; rule 8 ordering; rule 10 (no cache on a failure path); cancel
-    │   └── pipeline_test.go        # The real path against a stand-in agent: unknown, cache hit, agent down, dropped scenes
+    │   ├── pipeline_test.go        # The real path against a stand-in agent: unknown, cache hit, agent down, dropped scenes
+    │   └── scenefunc_test.go       # Request fidelity incl. the job-level quality flag; every way a clip_path is rejected
     │
     └── render/                     # P2 · the boundary with P3 is Render / Concat / Semaphore in FRD §14.1
         ├── precheck.go             # python ast.parse; banned imports/calls; requires class GeneratedScene(Scene)

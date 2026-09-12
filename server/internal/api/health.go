@@ -31,12 +31,13 @@ type Pinger interface {
 // Health caches the dependency checks. `docker`, `s3` and `agent` are checked at
 // boot and every 60 s, not per request (API.md §2.6).
 //
-// Sprint 1 scope: `atlas` is a real ping, `docker` shells out to `docker info`,
-// `agent` and `s3` are HTTP reachability probes. Sprint 3 replaces the S3 probe
-// with a real HeadBucket once P2's s3.go lands.
+// `atlas` is a real ping, `docker` shells out to `docker info`, `s3` is a
+// HeadBucket on the render bucket, and `agent` is a request to the agent
+// service's own health endpoint.
 type Health struct {
-	cfg   *config.Config
-	atlas Pinger
+	cfg    *config.Config
+	atlas  Pinger
+	bucket *bucketChecker
 
 	mu   sync.RWMutex
 	last HealthReport
@@ -45,7 +46,7 @@ type Health struct {
 const healthRefreshInterval = 60 * time.Second
 
 func NewHealth(cfg *config.Config, atlas Pinger) *Health {
-	return &Health{cfg: cfg, atlas: atlas}
+	return &Health{cfg: cfg, atlas: atlas, bucket: newBucketChecker(cfg)}
 }
 
 // Start runs the checks once, then refreshes them until ctx is cancelled.
@@ -76,7 +77,7 @@ func (h *Health) refresh(ctx context.Context) {
 	r := HealthReport{
 		Atlas:         h.checkAtlas(ctx),
 		Docker:        checkDocker(ctx),
-		S3:            reachable(ctx, h.cfg.S3Endpoint),
+		S3:            h.checkBucket(ctx),
 		Agent:         reachable(ctx, h.cfg.AgentURL+"/healthz"),
 		Version:       config.Version,
 		PromptVersion: cache.PromptVersion,
@@ -99,6 +100,17 @@ func (h *Health) checkAtlas(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return h.atlas.Ping(ctx) == nil
+}
+
+// checkBucket confirms the render bucket exists and we may read it.
+func (h *Health) checkBucket(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := h.bucket.check(ctx); err != nil {
+		slog.Debug("s3 health check failed", "error", err)
+		return false
+	}
+	return true
 }
 
 func checkDocker(ctx context.Context) bool {

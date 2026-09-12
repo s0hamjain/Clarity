@@ -82,7 +82,8 @@ func newRealPipelineWorker(t *testing.T, agentURL string) (*Worker, *recordingSt
 		t.Fatalf("config.Load: %v", err)
 	}
 	js, cs := newRecordingStore(), newRecordingCache()
-	w := NewWorker(cfg, js, cs, agent.New(agentURL), stubSceneFunc)
+	w := NewWorker(cfg, js, cs, agent.New(agentURL), stubConcat)
+	w.renderScene = stubSceneFunc
 	w.stepInterval = time.Millisecond
 	return w, js, cs
 }

@@ -85,7 +85,14 @@ func (s *Server) internalRender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	release, ok := s.acquireRender(r.Context())
+	// Cancelling the job must kill the container this call is about to start,
+	// so the render runs under the job's own context, found from work_dir.
+	parent := r.Context()
+	if jobCtx, ok := s.pipeline.JobContext(jobs.IDFromWorkDir(workDir)); ok {
+		parent = mergeCancel(r.Context(), jobCtx)
+	}
+
+	release, ok := s.acquireRender(parent)
 	if !ok {
 		w.Header().Set("Retry-After", "30")
 		writeError(w, r, http.StatusTooManyRequests, CodeRenderBusy,
@@ -105,7 +112,7 @@ func (s *Server) internalRender(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.RenderTimeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(s.cfg.RenderTimeoutSec)*time.Second)
 	defer cancel()
 
 	clipPath, rerr := s.render(ctx, req.Source, workDir, req.Quality)
@@ -155,6 +162,21 @@ func safeWorkDir(dir string) (string, error) {
 		return "", errors.New("`work_dir` must be inside " + root)
 	}
 	return clean, nil
+}
+
+// mergeCancel returns a context that is cancelled when either input is. The
+// request's own context alone is not enough: a DELETE cancels the job, not this
+// HTTP call, and the container has to die with it.
+func mergeCancel(a, b context.Context) context.Context {
+	merged, cancel := context.WithCancel(a)
+	go func() {
+		defer cancel()
+		select {
+		case <-b.Done():
+		case <-merged.Done():
+		}
+	}()
+	return merged
 }
 
 func isLoopback(remoteAddr string) bool {

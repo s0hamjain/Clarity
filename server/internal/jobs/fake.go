@@ -84,9 +84,28 @@ has been ruled out and ` + "`hi`" + ` is exclusive.
 > _This is sample data from the coordinator's fake pipeline —
 > ` + "`FAKE_AGENT=1`" + `. The real explanation arrives when P1's Explainer graph lands._`
 
-// FakeSceneFunc stands in for one POST /scenes/render call while FAKE_RENDER is
-// on: it takes a beat, then drops a clip in the scene's work dir. Sprint 3
-// replaces it with the real agent call.
+// FakeConcat stands in for P2's render.Concat until it lands. It checks the
+// clips are really there — the one thing the real Concat would also do first —
+// and then reports the sample URL instead of stitching and uploading.
+func FakeConcat(fakeVideoURL string) ConcatFunc {
+	return func(ctx context.Context, clipPaths []string, outKey string) (string, error) {
+		for _, p := range clipPaths {
+			if _, err := os.Stat(p); err != nil {
+				return "", fmt.Errorf("clip is missing: %w", err)
+			}
+		}
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		slog.Info("fake concat", "clips", len(clipPaths), "out_key", outKey)
+		return fakeVideoURL, nil
+	}
+}
+
+// FakeSceneFunc stands in for one POST /scenes/render call while FAKE_AGENT is
+// on: it takes a beat, then drops a clip in the scene's work dir.
 func FakeSceneFunc(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
 	select {
 	case <-time.After(2 * time.Second):
