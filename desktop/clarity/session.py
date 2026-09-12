@@ -121,8 +121,8 @@ class Session:
             on_close=self._spotlight_closed,
             on_open_recent=self._open_recent,
             on_pick_recent=self._pick_recent,
-            on_blur=self._close_overlay,
-            on_focus=self._ensure_overlay,
+            on_blur=self._hide_overlay,
+            on_focus=self._show_overlay,
             expanded=expanded,
         )
         with self._lock:
@@ -418,6 +418,18 @@ class Session:
             return
         with self._lock:
             self._overlay = overlay
+
+    def _hide_overlay(self) -> None:
+        with self._lock:
+            overlay = self._overlay
+        if overlay is not None and overlay.alive:
+            overlay.hide()
+
+    def _show_overlay(self) -> None:
+        with self._lock:
+            overlay = self._overlay
+        if overlay is not None and overlay.alive:
+            overlay.show()
 
     def _close_overlay(self) -> None:
         with self._lock:

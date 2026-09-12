@@ -49,6 +49,12 @@ class Overlay:
     def close(self) -> None:
         self._proc.close()
 
+    def hide(self) -> None:
+        self._proc.command("hide")
+
+    def show(self) -> None:
+        self._proc.command("show")
+
     @property
     def alive(self) -> bool:
         return self._proc.alive
@@ -106,7 +112,12 @@ def run_window(payload: dict[str, Any]) -> None:
     window.events.loaded += on_loaded
 
     def on_command(message: dict[str, Any]) -> None:
-        if message.get("cmd") == "close":
+        cmd = message.get("cmd")
+        if cmd == "hide":
+            window_host.evaluate(window, "window.clarityHide()")
+        elif cmd == "show":
+            window_host.evaluate(window, "window.clarityShow()")
+        elif cmd == "close":
             window_host.evaluate(window, "window.clarityHide()")
             threading.Timer(_FADE_OUT_SEC, lambda: window_host.close_window(window)).start()
 
