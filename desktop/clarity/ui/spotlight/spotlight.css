@@ -1,0 +1,95 @@
+/* The spotlight box. FRD §15.1: 680×96, thumbnail left, one field right,
+ * animates in over 180 ms ease-out. */
+
+body {
+  padding: 4px; /* room for the panel's shadow inside the transparent window */
+}
+
+/* Animate in: opacity 0→1, scale 0.96→1. The class goes on after first paint
+ * so the transition actually runs (FRD §15.1). */
+#panel {
+  opacity: 0;
+  transform: scale(0.96);
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
+}
+
+#panel.shown {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Leaving on Enter is quicker than arriving. */
+#panel.leaving {
+  opacity: 0;
+  transform: scale(0.98);
+  transition-duration: 120ms;
+  transition-timing-function: ease-in;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 100%;
+  padding: 0 14px;
+}
+
+.thumb {
+  width: 64px;
+  height: 48px;
+  flex: none;
+  border-radius: 6px;
+  border: 0.5px solid var(--stroke);
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.field {
+  flex: 1;
+  min-width: 0;
+}
+
+#input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-user-select: text;
+  user-select: text;
+  caret-color: var(--accent);
+}
+
+#input::placeholder {
+  color: var(--text-faint);
+}
+
+#input:disabled {
+  color: var(--text-dim);
+}
+
+.message {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.hint {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.hint kbd {
+  font: inherit;
+  padding: 2px 6px;
+  border: 0.5px solid var(--stroke);
+  border-radius: 5px;
+  background: var(--field);
+}
+
+/* While the job is being created. Over loopback this is a few milliseconds;
+ * it only becomes visible when the server is slow or unreachable. */
+body.sending .hint {
+  opacity: 0.4;
+}

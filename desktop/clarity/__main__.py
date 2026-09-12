@@ -19,6 +19,10 @@ def _parse(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--once", action="store_true", help="run one capture without the hotkey and exit")
     p.add_argument("--save", metavar="PATH", help="with --once: write the downscaled PNG here")
     p.add_argument("-v", "--verbose", action="store_true", help="debug logging")
+    # Not for people. The app re-runs itself with this to put each window in its
+    # own process, because rumps and pywebview can't share a main thread
+    # (clarity/window_host.py).
+    p.add_argument("--window-host", metavar="KIND", choices=("spotlight", "result"), help=argparse.SUPPRESS)
     return p.parse_args(argv)
 
 
@@ -45,6 +49,14 @@ def _run_once(save: str | None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse(sys.argv[1:] if argv is None else argv)
+
+    if args.window_host:
+        # A window process: it sets up its own logging to stderr, because stdout
+        # is the protocol back to the app.
+        from .window_host import run
+
+        return run(args.window_host)
+
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",

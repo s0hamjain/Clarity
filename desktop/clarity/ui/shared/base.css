@@ -1,0 +1,69 @@
+/* Shared look for both windows. FRD §15.1.
+ *
+ * The Sprint 1 spike (desktop/README.md) found pywebview's vibrancy blur too
+ * faint on macOS 26 to read text against, so both boxes paint their own solid
+ * near-black panel at 92 % opacity. `transparent=True` is still passed to
+ * create_window so the corners outside the radius stay see-through; without it
+ * the rounded corners would sit on a white rectangle.
+ *
+ * Nothing here loads from the network (FRD §23 rule 20). */
+
+:root {
+  --panel: rgba(20, 20, 24, 0.92);
+  --text: rgba(255, 255, 255, 0.92);
+  --text-dim: rgba(255, 255, 255, 0.55);
+  --text-faint: rgba(255, 255, 255, 0.38);
+  --stroke: rgba(255, 255, 255, 0.10);
+  --field: rgba(255, 255, 255, 0.07);
+  --accent: #7aa2ff;
+  --danger: #ff8a8a;
+  --radius: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  color: var(--text);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* The panel every window draws itself on. */
+.panel {
+  height: 100%;
+  background: var(--panel);
+  border: 0.5px solid var(--stroke);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+code,
+pre {
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 12px;
+}
+
+/* Anything the user should be able to select or click has to opt out of
+ * easy_drag, which otherwise turns the whole window into a drag handle. */
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
