@@ -10,6 +10,7 @@ HackCMU/
 ├── FILE_STRUCTURE.md          # This file.
 ├── docs/
 │   ├── FRD.md                 # Technical specification — every shape, schema, route, rule. Source of truth.
+│   ├── API.md                 # REST API reference — every endpoint on both services, errors, lifecycle, limits.
 │   ├── SETUP.md               # Environment setup for every service and tool; verification checklist.
 │   └── WORK_SPLIT.md          # P1–P4 across five sprints; sync points; merge protocol; ownership.
 ├── samples/                   # P2 · verified Manim seed scenes = the RAG corpus seed

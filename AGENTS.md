@@ -20,7 +20,7 @@ Four people, four roles, four directories, no overlap: **P1 — AI** (`agent/`: 
 
 ## 2. Document Reference
 
-There are three authoritative documents plus this file and the file map. Always consult the relevant one before implementing. Never guess at a schema, endpoint, index definition, or configuration value — look it up.
+There are four authoritative documents plus this file and the file map. Always consult the relevant one before implementing. Never guess at a schema, endpoint, index definition, or configuration value — look it up.
 
 ### docs/FRD.md (the technical specification)
 
@@ -46,6 +46,10 @@ The source of truth for every implementation detail. Section map:
 - **§22 Environment Variables** — complete `.env` templates.
 - **§23 Key Implementation Rules** — 21 rules that must never be violated. Read them before any code.
 - **§24 Open Questions** — each with an owner and a deadline.
+
+### docs/API.md
+
+The REST API reference for both services — every endpoint with method, path, caller, request, response, and errors; the shared error envelope and code table; the job status lifecycle with its guarantees; the call sequence for one job; limits and timeouts; a curl cookbook; an endpoint index with priorities. Authoritative for HTTP — FRD §10–§11 summarize it.
 
 ### docs/SETUP.md
 
@@ -144,8 +148,11 @@ Sync-point checklists are in WORK_SPLIT.md under each sprint.
 |---|---|
 | Understand what this is | §1 above; FRD §1–6 |
 | Find where a file goes | FILE_STRUCTURE.md |
-| Look up an agent endpoint shape | FRD §10 |
-| Look up the public API or a status value | FRD §11 |
+| Look up any endpoint — method, request, response, errors | API.md §2 (coordinator), §3 (agent) |
+| Look up an error code or the error envelope | API.md §4 |
+| Look up the job status lifecycle | API.md §5 |
+| Look up a limit or timeout | API.md §7 |
+| See the shapes in architectural context | FRD §10–§11 |
 | Look up an Atlas document or index | FRD §9 |
 | Understand the cache key | FRD §12 |
 | Understand retrieval and the corpus | FRD §13 |

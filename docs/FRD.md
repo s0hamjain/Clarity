@@ -231,6 +231,8 @@ The text embedded for each document is `title + "\n" + description + "\n" + tags
 
 # 10. Agent Service API (internal, Python, `:8000`)
 
+> Full endpoint reference — errors, limits, timeouts, corpus-management endpoints, curl examples — is in [API.md](API.md) §3. The shapes below are the summary.
+
 Not exposed to the desktop app — only the coordinator calls it. Every response is JSON produced via structured outputs (`output_config={"format": ...}`); no markdown fences, no prose. Every request carries `guardrails: bool`.
 
 ### 10.1 `POST /vision`
@@ -352,6 +354,8 @@ Generated snippets land with `verified: false` and are **excluded from retrieval
 ---
 
 # 11. Coordinator API (public, Go, `:8080`)
+
+> Full endpoint reference — including `DELETE /api/jobs/{id}` (cancel), the SSE stream, the error envelope, and limits — is in [API.md](API.md) §2. The shapes below are the summary.
 
 ### 11.1 `POST /api/jobs`
 

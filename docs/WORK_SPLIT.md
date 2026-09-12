@@ -162,6 +162,9 @@ Embed the query with `input_type="query"`; `$vectorSearch` with `numCandidates: 
 **Step 4 — `/snippets/ingest`** (ref: FRD §10.5)
 Embed and insert. `verified` defaults `false` unless the request says otherwise. `agent/scripts/promote_snippet.py <id>` flips it.
 
+**Step 4b — Corpus management endpoints** (ref: API.md §3.6–3.9)
+`GET /snippets`, `GET /snippets/{id}`, `PATCH /snippets/{id}`, `DELETE /snippets/{id}`. `promote_snippet.py` becomes a one-line `PATCH {\"verified\": true}`. `PATCH` on title/description/tags re-embeds.
+
 **Step 5 — Decide determinism** (ref: FRD §10.1, §24)
 Using Sprint 1's number: if ≥ 4 of 6 collided, stay on Opus 5. If not, switch `/vision` to `claude-haiku-4-5` with `temperature=0` and re-run the experiment. Record the decision in the PR.
 
@@ -270,6 +273,9 @@ The fan-out's per-scene function calls P2's `RenderWithRepair` with `retrieve` =
 **Step 3 — `/healthz` real** (ref: FRD §11.3)
 Boot-time checks: Atlas ping, `docker info`, S3 `HeadBucket`, agent `/healthz`.
 
+**Step 4 — Cancel + cache inspect** (ref: API.md §2.3, §2.5)
+`DELETE /api/jobs/{id}`: cancel the job's `context.Context` so pending scenes are skipped and running containers are killed; status `cancelled`; nothing cached; idempotent. `GET /api/cache/{hash}` for pre-warm checks. Error envelope from API.md §4 on every non-2xx, including 404s.
+
 ---
 
 ### P4 — Video Playback, Recents, Failure States
@@ -288,6 +294,9 @@ With an empty field, **↓** or `/` expands the box downward into a list (max 8 
 **Step 5 — Failure states** — `done` + null video (quiet note); `failed` with `error: "no_problem_found"` ("No problem found in that capture."); generic `failed` (plain message + retry); 404 on a live job ("expired"); 404 on a reopened recent (local copy wins); 180 s; recent's screenshot file missing (thumbnail shown, re-ask disabled).
 
 **Step 6 — Guardrails toggle wired** — the menu checkbox writes `config.json` and every job sends the current value.
+
+**Step 7 — Cancel on X** (ref: API.md §2.3)
+Closing the result box before `done` sends `DELETE /api/jobs/{id}`. Fire-and-forget; a failure is logged, not shown.
 
 ---
 
