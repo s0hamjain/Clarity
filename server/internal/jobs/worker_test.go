@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/s0hamjain/Clarity/server/internal/agent"
-	"github.com/s0hamjain/Clarity/server/internal/config"
 )
 
 // A local store keeps this test in package jobs without importing store, which
@@ -22,6 +21,8 @@ type recordingStore struct {
 	jobs    map[string]*Job
 	history []Fields
 	failOn  string // status name whose write should fail, for the error path
+	updates int    // every Update call
+	stamps  int    // every Update call that moved updated_at
 }
 
 func newRecordingStore() *recordingStore {
@@ -88,10 +89,27 @@ func (s *recordingStore) Update(_ context.Context, id string, f Fields) error {
 		}
 	}
 	s.history = append(s.history, rec)
+	s.updates++
 	// Every write stamps updated_at (FRD §23 rule 9) — the real stores do it in
 	// Update, so the caller cannot forget.
+	before := j.UpdatedAt
 	j.UpdatedAt = time.Now().UTC()
+	if j.UpdatedAt.After(before) || before.IsZero() {
+		s.stamps++
+	}
 	return nil
+}
+
+func (s *recordingStore) updateCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updates
+}
+
+func (s *recordingStore) stampCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stamps
 }
 
 func (s *recordingStore) snapshot() []Fields {
@@ -132,29 +150,30 @@ func (c *recordingCache) len() int {
 	return len(c.entries)
 }
 
+// newTestWorker builds a worker on the real pipeline, with a stand-in for P1's
+// service. There is no fake mode any more, so every test drives the real path.
 func newTestWorker(t *testing.T) (*Worker, *recordingStore, *recordingCache) {
 	t.Helper()
-	t.Setenv("MONGODB_URI", "")
-	t.Setenv("FAKE_AGENT", "1")
-	t.Setenv("FAKE_RENDER", "1")
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config.Load: %v", err)
-	}
-	js, cs := newRecordingStore(), newRecordingCache()
-	w := NewWorker(cfg, js, cs, agent.New("http://127.0.0.1:1"), stubConcat)
-	w.renderScene = stubSceneFunc
-	// Keep the fake pipeline fast; one second per status is for humans.
-	w.stepInterval = 2 * time.Millisecond
-	return w, js, cs
+	f := newFakeAgent(t)
+	return newRealPipelineWorker(t, f.server.URL)
+}
+
+// newSlowTestWorker keeps a job in flight long enough to act on it.
+func newSlowTestWorker(t *testing.T, d time.Duration) (*Worker, *recordingStore, *recordingCache) {
+	t.Helper()
+	f := newFakeAgent(t)
+	f.delay = d
+	return newRealPipelineWorker(t, f.server.URL)
 }
 
 func runToTerminal(t *testing.T, w *Worker, js *recordingStore, j *Job) *Job {
 	t.Helper()
 	_ = js.Create(context.Background(), j)
-	w.Start(j, "aGVsbG8=", "image/png")
+	if err := w.Start(j, "aGVsbG8=", "image/png", "req_test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		got, err := js.Get(context.Background(), j.ID)
 		if err == nil && got.Status.IsTerminal() {
@@ -257,12 +276,14 @@ func TestFailedJobWritesNothingToTheCache(t *testing.T) {
 }
 
 func TestCancelStopsThePipeline(t *testing.T) {
-	w, js, cs := newTestWorker(t)
+	w, js, cs := newSlowTestWorker(t, 2*time.Second)
 	j := New("cancel me", false, "test")
 	_ = js.Create(context.Background(), j)
-	w.Start(j, "aGVsbG8=", "image/png")
+	if err := w.Start(j, "aGVsbG8=", "image/png", "req_test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
-	time.Sleep(5 * time.Millisecond) // let it get a couple of statuses in
+	time.Sleep(50 * time.Millisecond) // let it reach the /explain call
 	if err := w.Cancel(context.Background(), j.ID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -273,7 +294,7 @@ func TestCancelStopsThePipeline(t *testing.T) {
 	}
 
 	// It must stay cancelled — the goroutine does not carry on behind the DELETE.
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 	got, _ = js.Get(context.Background(), j.ID)
 	if got.Status != StatusCancelled {
 		t.Errorf("status drifted to %q after cancel", got.Status)
@@ -348,4 +369,63 @@ func stubConcat(ctx context.Context, clipPaths []string, outKey string) (string,
 		return "", ctx.Err()
 	}
 	return "http://minio.test/clarity-renders/" + outKey, nil
+}
+
+// The bounded queue is what turns a burst of captures into 503s instead of an
+// unbounded pile of goroutines (API.md §7).
+func TestQueueDepthIsEnforced(t *testing.T) {
+	w, js, _ := newSlowTestWorker(t, 5*time.Second)
+
+	started := make([]*Job, 0, QueueDepth)
+	for i := 0; i < QueueDepth; i++ {
+		j := New("queue filler", false, "test")
+		_ = js.Create(context.Background(), j)
+		if err := w.Start(j, "aGVsbG8=", "image/png", "req_test"); err != nil {
+			t.Fatalf("job %d of %d rejected early: %v", i+1, QueueDepth, err)
+		}
+		started = append(started, j)
+	}
+	if got := w.InFlight(); got != QueueDepth {
+		t.Errorf("InFlight() = %d, want %d", got, QueueDepth)
+	}
+
+	// One more than the bound is refused, not queued.
+	overflow := New("one too many", false, "test")
+	_ = js.Create(context.Background(), overflow)
+	if err := w.Start(overflow, "aGVsbG8=", "image/png", "req_test"); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("err = %v, want ErrQueueFull", err)
+	}
+
+	// Cancelling frees a slot, and the next capture gets in.
+	if err := w.Cancel(context.Background(), started[0].ID); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && w.InFlight() >= QueueDepth {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := w.Start(overflow, "aGVsbG8=", "image/png", "req_test"); err != nil {
+		t.Errorf("a freed slot was not reusable: %v", err)
+	}
+
+	for _, j := range started {
+		_ = w.Cancel(context.Background(), j.ID)
+	}
+}
+
+// Rule 9, enforced rather than audited by hand: every write the pipeline makes
+// has to move updated_at, or the TTL index deletes a job mid-render.
+func TestEveryWriteStampsUpdatedAt(t *testing.T) {
+	w, js, _ := newTestWorker(t)
+	final := runToTerminal(t, w, js, New("updated_at", false, "test"))
+
+	if !final.UpdatedAt.After(final.CreatedAt) {
+		t.Errorf("updated_at %v is not after created_at %v", final.UpdatedAt, final.CreatedAt)
+	}
+	if n := js.updateCount(); n != js.stampCount() {
+		t.Errorf("%d of %d Update calls stamped updated_at; rule 9 says all of them", js.stampCount(), n)
+	}
+	if js.updateCount() == 0 {
+		t.Fatal("the pipeline made no writes at all")
+	}
 }

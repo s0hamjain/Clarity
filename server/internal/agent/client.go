@@ -219,7 +219,7 @@ func (c *Client) do(ctx context.Context, timeout time.Duration, path string, in,
 		return fmt.Errorf("agent %s: build request: %w", path, err)
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	if id := requestIDFrom(ctx); id != "" {
+	if id := RequestIDFrom(ctx); id != "" {
 		req.Header.Set("X-Request-Id", id)
 	}
 
@@ -283,7 +283,8 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, requestIDKey, id)
 }
 
-func requestIDFrom(ctx context.Context) string {
+// RequestIDFrom returns the request ID carried on ctx, or "" if there is none.
+func RequestIDFrom(ctx context.Context) string {
 	id, _ := ctx.Value(requestIDKey).(string)
 	return id
 }

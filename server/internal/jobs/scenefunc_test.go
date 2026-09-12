@@ -16,9 +16,7 @@ import (
 
 func sceneTestConfig(t *testing.T, agentURL string) *config.Config {
 	t.Helper()
-	t.Setenv("MONGODB_URI", "")
-	t.Setenv("FAKE_AGENT", "0")
-	t.Setenv("FAKE_RENDER", "1")
+	t.Setenv("MONGODB_URI", "mongodb://test.invalid/clarity")
 	t.Setenv("AGENT_URL", agentURL)
 	t.Setenv("MANIM_QUALITY", "-qm")
 	cfg, err := config.Load()

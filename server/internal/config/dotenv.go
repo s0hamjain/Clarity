@@ -13,9 +13,9 @@ import (
 // way the agent service uses python-dotenv.
 //
 // A variable already set in the real environment always wins, so
-// `FAKE_AGENT=0 go run ./cmd/server` overrides the file rather than being
-// silently ignored. A missing file is not an error: in fake mode there is
-// nothing to configure, and in production the values come from the environment.
+// `PORT=9090 go run ./cmd/server` overrides the file rather than being
+// silently ignored. A missing file is not an error: the values can come from
+// the environment instead.
 func loadDotEnv(path string) {
 	f, err := os.Open(path)
 	if err != nil {

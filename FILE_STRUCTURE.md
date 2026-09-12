@@ -140,11 +140,12 @@ server/
     │   ├── health.go               # Cached dependency checks behind /healthz; refreshed at boot and every 60 s
     │   ├── cors.go                 # Access-Control-Allow-Origin: * on every route incl. 404/5xx; X-Request-Id echo/generate
     │   ├── s3health.go            # Unauthenticated HEAD on the render bucket: exists AND public-read (FRD §14.6)
+    │   ├── stores_test.go         # In-memory job/cache doubles for the handler tests
     │   ├── handlers_test.go        # Status codes, the error envelope, CORS, and the exact GET /api/jobs/{id} field set
     │   └── internal_render_test.go # Loopback-only; precheck gate; work_dir containment; semaphore 429
     │
     ├── config/                     # P3 · env → Config (FRD §22), read once at boot
-    │   ├── config.go               # Defaults, validation; UsesAtlas(); the FAKE_AGENT / FAKE_RENDER flags
+    │   ├── config.go               # Defaults and validation; MONGODB_URI is required
     │   ├── dotenv.go               # Reads server/.env, as SETUP §9 assumes; the real environment wins
     │   └── dotenv_test.go          # Parsing rules; environment beats file; a missing file is fine
     │
@@ -152,8 +153,7 @@ server/
     │   ├── mongo.go                # Client, database handle, Ping for /healthz
     │   ├── jobs.go                 # Create/Get/Update — every Update sets updated_at
     │   ├── cache.go                # Get/Put by problem_hash
-    │   ├── indexes.go              # TTL indexes on jobs.updated_at (24 h) and cache.created_at (7 d), idempotent
-    │   └── memory.go               # In-memory stand-in so the fully faked server needs no Atlas. Deleted with the flags in Sprint 4.
+    │   └── indexes.go              # TTL indexes on jobs.updated_at (24 h) and cache.created_at (7 d), idempotent
     │
     ├── cache/                      # P3
     │   ├── key.go                  # PromptVersion const · Normalize() · Hash() — FRD §12
@@ -168,7 +168,6 @@ server/
     │   ├── store.go                # The Store / CacheStore interfaces the worker consumes; store/ implements them
     │   ├── worker.go               # vision → hash → cache? → explain → write explanation → fan out → concat → upload → done
     │   ├── scenes.go               # Per-scene work_dir + goroutine calling agent POST /scenes/render; defer recover(); scenes_done
-    │   ├── fake.go                 # Canned /vision, /explain and concat stand-ins. Deleted in Sprint 4.
     │   ├── scenefunc.go            # AgentSceneFunc: one POST /scenes/render per scene; validates the clip_path it gets back
     │   ├── worker_test.go          # The status walk; rule 8 ordering; rule 10 (no cache on a failure path); cancel
     │   ├── pipeline_test.go        # The real path against a stand-in agent: unknown, cache hit, agent down, dropped scenes

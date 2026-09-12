@@ -79,7 +79,7 @@ func (s *Server) internalRender(w http.ResponseWriter, r *http.Request) {
 
 	// A container cannot start without Docker, and that is infrastructure, not
 	// something the agent's repair loop can fix — so it is a non-2xx.
-	if !s.cfg.FakeRender && !s.health.Report().Docker {
+	if !s.health.Report().Docker {
 		writeError(w, r, http.StatusServiceUnavailable, CodeDependencyDown,
 			"Docker is not running; no scene can be rendered.", nil)
 		return

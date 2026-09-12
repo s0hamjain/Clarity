@@ -30,16 +30,6 @@ type Config struct {
 	// ManimQuality is a job-level constant passed identically to every scene
 	// (FRD §23 rule 12) — concat with -c copy depends on it.
 	ManimQuality string
-
-	// Fake modes. Both default to on until Sprint 4, when they are deleted.
-	// With both on the server needs no Atlas, no Docker and no API keys, which
-	// is what P4 builds the desktop UI against.
-	FakeAgent  bool
-	FakeRender bool
-
-	// FakeVideoURL is served as video_url when FakeRender is on. Point it at a
-	// sample MP4 you have put in MinIO by hand.
-	FakeVideoURL string
 }
 
 // Load reads server/.env (if present) and then the environment. Real
@@ -59,18 +49,12 @@ func Load() (*Config, error) {
 		RenderConcurrency: envInt("RENDER_CONCURRENCY", max(1, runtime.NumCPU()/2)),
 		RenderTimeoutSec:  envInt("RENDER_TIMEOUT_SEC", 120),
 		ManimQuality:      env("MANIM_QUALITY", "-ql"),
-		FakeAgent:         envBool("FAKE_AGENT", true),
-		FakeRender:        envBool("FAKE_RENDER", true),
-		FakeVideoURL:      env("FAKE_VIDEO_URL", "http://localhost:9000/clarity-renders/samples/sample.mp4"),
 	}
 
-	// The in-memory store is a development convenience, so it is available to
-	// any faked configuration — including "real agent, fake render", which is
-	// how the pipeline is exercised against P1 before Atlas is needed. A fully
-	// real run always persists, and once the flags are deleted in Sprint 4 this
-	// becomes an unconditional requirement.
-	if c.MongoURI == "" && !c.FakeAgent && !c.FakeRender {
-		return nil, fmt.Errorf("MONGODB_URI is required when both FAKE_AGENT and FAKE_RENDER are off")
+	// Every job is real now, so every job persists. There is no fake mode left
+	// to fall back on.
+	if c.MongoURI == "" {
+		return nil, fmt.Errorf("MONGODB_URI is required")
 	}
 	if c.ManimQuality != "-ql" && c.ManimQuality != "-qm" {
 		return nil, fmt.Errorf("MANIM_QUALITY must be -ql or -qm, got %q", c.ManimQuality)
@@ -91,10 +75,6 @@ func dotEnvPath() string {
 	}
 	return ".env"
 }
-
-// UsesAtlas reports whether the coordinator is backed by MongoDB Atlas rather
-// than the in-memory fake store.
-func (c *Config) UsesAtlas() bool { return c.MongoURI != "" }
 
 func env(key, def string) string {
 	if v := strings.TrimSpace(os.Getenv(key)); v != "" {

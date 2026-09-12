@@ -66,6 +66,14 @@ func (h *Health) Start(ctx context.Context) {
 	}()
 }
 
+// set overwrites the cached report. Only tests use it: they inject a stand-in
+// renderer, so the Docker gate in /internal/render has nothing real to check.
+func (h *Health) set(r HealthReport) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.last = r
+}
+
 // Report returns the most recent check results.
 func (h *Health) Report() HealthReport {
 	h.mu.RLock()

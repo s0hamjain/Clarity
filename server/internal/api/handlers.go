@@ -31,8 +31,9 @@ const (
 type Pipeline interface {
 	// Start drives one job to a terminal status in its own goroutine.
 	// imageB64 is raw base64 with the data-URL prefix already stripped; it is
-	// never persisted (FRD §20).
-	Start(j *jobs.Job, imageB64, mediaType string)
+	// never persisted (FRD §20). Returns jobs.ErrQueueFull when the
+	// coordinator is already running as many jobs as it will accept.
+	Start(j *jobs.Job, imageB64, mediaType, requestID string) error
 	// Cancel stops pending work for a job. Idempotent.
 	Cancel(ctx context.Context, id string) error
 	// JobContext returns a running job's context so /internal/render can bind
@@ -140,19 +141,34 @@ func (s *Server) createJob(w http.ResponseWriter, r *http.Request) {
 		source = "desktop"
 	}
 
+	requestID := RequestIDFrom(r.Context())
 	job := jobs.New(req.UserPrompt, req.Guardrails, source)
 	if err := s.jobs.Create(r.Context(), job); err != nil {
-		slog.Error("create job", "request_id", RequestIDFrom(r.Context()), "error", err)
+		slog.Error("create job", "request_id", requestID, "error", err)
 		writeError(w, r, http.StatusServiceUnavailable, CodeDependencyDown,
 			"Could not record the job. Is Atlas reachable?", nil)
 		return
 	}
 
 	// Hand off and return. Nothing that can block runs before this response.
-	s.pipeline.Start(job, imageB64, mediaType)
+	if err := s.pipeline.Start(job, imageB64, mediaType, requestID); err != nil {
+		// The job record exists but nothing will drive it, so close it out
+		// rather than leaving a row that never moves.
+		if uerr := s.jobs.Update(r.Context(), job.ID, jobs.Fields{
+			"status": jobs.StatusFailed, "error": CodeQueueFull,
+		}); uerr != nil {
+			slog.Error("mark queue-rejected job failed", "request_id", requestID, "job_id", job.ID, "error", uerr)
+		}
+		slog.Warn("job rejected: queue full", "request_id", requestID, "job_id", job.ID, "depth", jobs.QueueDepth)
+		w.Header().Set("Retry-After", "30")
+		writeError(w, r, http.StatusServiceUnavailable, CodeQueueFull,
+			"Too many captures are already being processed. Retry after the suggested delay.",
+			map[string]any{"queue_depth": jobs.QueueDepth})
+		return
+	}
 
 	slog.Info("job created",
-		"request_id", RequestIDFrom(r.Context()),
+		"request_id", requestID,
 		"job_id", job.ID,
 		"source", source,
 		"guardrails", job.Guardrails,

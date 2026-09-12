@@ -28,6 +28,10 @@ type fakeAgentService struct {
 	visionStatus    int
 	explainStatus   int
 	explainResponse agent.ExplainResponse
+
+	// delay stands in for how long a real model call takes, so tests that need
+	// a job to still be running — cancellation, overload — have a window.
+	delay time.Duration
 }
 
 func newFakeAgent(t *testing.T) *fakeAgentService {
@@ -58,6 +62,13 @@ func newFakeAgent(t *testing.T) *fakeAgentService {
 	})
 	mux.HandleFunc("POST /explain", func(w http.ResponseWriter, r *http.Request) {
 		f.explainCalls.Add(1)
+		if f.delay > 0 {
+			select {
+			case <-time.After(f.delay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		if f.explainStatus != 0 {
 			w.WriteHeader(f.explainStatus)
 			_, _ = w.Write([]byte(`{"error":{"code":"model_error","message":"gemini down"}}`))
@@ -72,9 +83,7 @@ func newFakeAgent(t *testing.T) *fakeAgentService {
 
 func newRealPipelineWorker(t *testing.T, agentURL string) (*Worker, *recordingStore, *recordingCache) {
 	t.Helper()
-	t.Setenv("MONGODB_URI", "")
-	t.Setenv("FAKE_AGENT", "0") // the real path is what we are testing
-	t.Setenv("FAKE_RENDER", "1")
+	t.Setenv("MONGODB_URI", "mongodb://test.invalid/clarity") // never dialled; the store is injected
 	t.Setenv("AGENT_URL", agentURL)
 
 	cfg, err := config.Load()
@@ -84,7 +93,6 @@ func newRealPipelineWorker(t *testing.T, agentURL string) (*Worker, *recordingSt
 	js, cs := newRecordingStore(), newRecordingCache()
 	w := NewWorker(cfg, js, cs, agent.New(agentURL), stubConcat)
 	w.renderScene = stubSceneFunc
-	w.stepInterval = time.Millisecond
 	return w, js, cs
 }
 

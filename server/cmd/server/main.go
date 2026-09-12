@@ -39,62 +39,39 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var (
-		jobStore   jobs.Store
-		cacheStore jobs.CacheStore
-		atlas      api.Pinger
-	)
+	bootCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	mongo, err := store.Connect(bootCtx, cfg.MongoURI, cfg.MongoDB)
+	cancel()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = mongo.Close(closeCtx)
+	}()
 
-	if cfg.UsesAtlas() {
-		bootCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		mongo, err := store.Connect(bootCtx, cfg.MongoURI, cfg.MongoDB)
-		cancel()
-		if err != nil {
-			return err
-		}
-		defer func() {
-			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = mongo.Close(closeCtx)
-		}()
-
-		// TTL indexes before the first request, so no job is ever written into a
-		// collection that cannot expire it (FRD §9.1–9.2).
-		idxCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = store.EnsureIndexes(idxCtx, mongo)
-		cancel()
-		if err != nil {
-			return err
-		}
-
-		jobStore, cacheStore, atlas = store.NewJobs(mongo), store.NewCache(mongo), mongo
-		slog.Info("store ready", "backend", "atlas", "db", cfg.MongoDB)
-	} else {
-		// Only reachable with both fake flags on — config.Load enforces that.
-		jobStore, cacheStore = store.NewMemoryJobs(), store.NewMemoryCache()
-		slog.Warn("running on the in-memory store: MONGODB_URI is unset, so nothing persists and /healthz reports atlas:false",
-			"backend", "memory")
+	// TTL indexes before the first request, so no job is ever written into a
+	// collection that cannot expire it (FRD §9.1–9.2).
+	idxCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err = store.EnsureIndexes(idxCtx, mongo)
+	cancel()
+	if err != nil {
+		return err
 	}
 
-	health := api.NewHealth(cfg, atlas)
+	jobStore, cacheStore := store.NewJobs(mongo), store.NewCache(mongo)
+	slog.Info("store ready", "backend", "atlas", "db", cfg.MongoDB)
+
+	health := api.NewHealth(cfg, mongo)
 	health.Start(ctx)
 
 	agentClient := agent.New(cfg.AgentURL)
 
-	// /internal/render is always real: P2's Render runs generated code inside
-	// the sandbox, and no fake belongs in that path. Which scenes reach it is
-	// gated by FAKE_AGENT, since /scenes/render is an agent call.
+	// P2 owns both: Render runs one scene inside the sandbox, Concat stitches
+	// the surviving clips and uploads the result.
 	renderFn := api.RenderFunc(render.Render)
-
-	// FAKE_RENDER now gates only the stitch-and-upload tail, the one piece P2
-	// has not delivered. Sprint 4 deletes the flag along with the fake.
-	concatFn := jobs.ConcatFunc(jobs.FakeConcat(cfg.FakeVideoURL))
-	if !cfg.FakeRender {
-		// Refuse to start rather than pretend: a coordinator that renders
-		// scenes and then silently loses them is worse than one that will not
-		// boot.
-		return errors.New("FAKE_RENDER=0 but P2's render.Concat is not wired yet; leave FAKE_RENDER=1 until it lands")
-	}
+	concatFn := jobs.ConcatFunc(render.Concat)
 
 	worker := jobs.NewWorker(cfg, jobStore, cacheStore, agentClient, concatFn)
 	srv := &http.Server{
@@ -109,8 +86,6 @@ func run() error {
 		slog.Info("coordinator listening",
 			"addr", srv.Addr,
 			"version", config.Version,
-			"fake_agent", cfg.FakeAgent,
-			"fake_render", cfg.FakeRender,
 			"agent_url", cfg.AgentURL,
 			"manim_quality", cfg.ManimQuality,
 			"render_concurrency", cfg.RenderConcurrency,

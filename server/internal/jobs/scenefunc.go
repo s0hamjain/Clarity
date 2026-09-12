@@ -29,7 +29,10 @@ func AgentSceneFunc(
 	guardrails bool,
 ) SceneFunc {
 	return func(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
-		log := slog.With("job_id", jobID, "scene", scene.Index)
+		// job_id + scene is the agent's thread_id, so its graph logs and these
+		// join on the same key.
+		log := slog.With("job_id", jobID, "scene", scene.Index,
+			"request_id", agent.RequestIDFrom(ctx))
 
 		resp, err := client.ScenesRender(ctx, agent.SceneRenderRequest{
 			JobID:           jobID,

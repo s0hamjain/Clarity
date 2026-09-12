@@ -359,9 +359,19 @@ Server URL defaults to `http://localhost:8080`. Change it via the menu bar **Ser
 
 ### 10.4 UI development without the backend
 
+`FAKE_AGENT` and `FAKE_RENDER` were deleted in Sprint 4 — the coordinator is
+real end to end now and needs Atlas, Docker, MinIO and the API keys, exactly as
+in §13. There is no dependency-free mode left.
+
+To work on the UI without standing all of that up, point the app at any stub
+that answers the two endpoints the result box uses (API.md §2.1 and §2.2):
+
 ```sh
-cd server && FAKE_AGENT=1 FAKE_RENDER=1 go run ./cmd/server   # walks a job through every status on a timer; needs no Atlas, Docker, or keys
+# config.json → "server_url": "http://localhost:8081"
 ```
+
+A few lines of `http.server` returning one fixed `done` job is enough — it is
+the response *shape* the UI is built against, not the pipeline.
 
 ---
 

@@ -15,21 +15,27 @@ import (
 	"github.com/s0hamjain/Clarity/server/internal/config"
 	"github.com/s0hamjain/Clarity/server/internal/jobs"
 	"github.com/s0hamjain/Clarity/server/internal/render"
-	"github.com/s0hamjain/Clarity/server/internal/store"
 )
 
 // stubPipeline records what the handler handed off, without doing any work.
 type stubPipeline struct {
-	mu        sync.Mutex
-	started   []string
-	cancelled []string
-	contexts  map[string]context.Context
+	mu          sync.Mutex
+	started     []string
+	cancelled   []string
+	requestIDs  []string
+	contexts    map[string]context.Context
+	rejectStart error
 }
 
-func (p *stubPipeline) Start(j *jobs.Job, imageB64, mediaType string) {
+func (p *stubPipeline) Start(j *jobs.Job, imageB64, mediaType, requestID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.rejectStart != nil {
+		return p.rejectStart
+	}
 	p.started = append(p.started, j.ID)
+	p.requestIDs = append(p.requestIDs, requestID)
+	return nil
 }
 
 // JobContext reports no running job by default, which is the state
@@ -58,17 +64,19 @@ func newTestServer(t *testing.T) (http.Handler, jobs.Store, jobs.CacheStore, *st
 // past the router — the render function and the semaphore wait.
 func newTestServerFull(t *testing.T) (*Server, jobs.Store, jobs.CacheStore, *stubPipeline) {
 	t.Helper()
-	t.Setenv("FAKE_AGENT", "1")
-	t.Setenv("FAKE_RENDER", "1")
-	t.Setenv("MONGODB_URI", "")
+	t.Setenv("MONGODB_URI", "mongodb://test.invalid/clarity") // never dialled; the stores are injected
 
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	jobStore, cacheStore := store.NewMemoryJobs(), store.NewMemoryCache()
+	jobStore, cacheStore := newMemJobs(), newMemCache()
 	pipe := &stubPipeline{}
-	srv := NewServer(cfg, jobStore, cacheStore, pipe, NewHealth(cfg, nil), stubRender)
+	health := NewHealth(cfg, nil)
+	// The renderer is a stand-in, so report Docker up: these tests are about
+	// the handler, not about whether this machine has a daemon running.
+	health.set(HealthReport{Docker: true})
+	srv := NewServer(cfg, jobStore, cacheStore, pipe, health, stubRender)
 	return srv, jobStore, cacheStore, pipe
 }
 
@@ -352,4 +360,55 @@ func stubRender(ctx context.Context, src, workDir, quality string) (string, *ren
 		return "", &render.RenderError{Stage: "container", Traceback: err.Error()}
 	}
 	return clipPath, nil
+}
+
+// Over the bound, new captures are refused rather than queued forever, and the
+// desktop app is told when to come back (API.md §7).
+func TestCreateJobQueueFull(t *testing.T) {
+	h, jobStore, _, pipe := newTestServer(t)
+	pipe.rejectStart = jobs.ErrQueueFull
+
+	w := do(t, h, "POST", "/api/jobs", `{"image":"`+pngDataURL(8)+`"}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (body: %s)", w.Code, w.Body.String())
+	}
+	if got := decodeError(t, w).Error.Code; got != CodeQueueFull {
+		t.Errorf("code = %q, want %q", got, CodeQueueFull)
+	}
+	if w.Header().Get("Retry-After") == "" {
+		t.Error("503 queue_full without Retry-After leaves the client guessing")
+	}
+
+	// The job row was already written, so it has to be closed out rather than
+	// left sitting in `queued` for a pipeline that will never run.
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	jobStore.(*memJobs).mu.RLock()
+	defer jobStore.(*memJobs).mu.RUnlock()
+	for _, j := range jobStore.(*memJobs).m {
+		if j.Status != jobs.StatusFailed {
+			t.Errorf("rejected job left in %q, want failed", j.Status)
+		}
+		if j.Error == nil || *j.Error != CodeQueueFull {
+			t.Errorf("rejected job error = %v, want %q", j.Error, CodeQueueFull)
+		}
+	}
+}
+
+// The request ID reaches the pipeline, so a capture can be followed from the
+// HTTP log line all the way through the agent's graph logs.
+func TestRequestIDReachesThePipeline(t *testing.T) {
+	h, _, _, pipe := newTestServer(t)
+
+	r := httptest.NewRequest("POST", "/api/jobs", strings.NewReader(`{"image":"`+pngDataURL(8)+`"}`))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("X-Request-Id", "req_traceme")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	pipe.mu.Lock()
+	defer pipe.mu.Unlock()
+	if len(pipe.requestIDs) != 1 || pipe.requestIDs[0] != "req_traceme" {
+		t.Errorf("pipeline got request IDs %v, want [req_traceme]", pipe.requestIDs)
+	}
 }

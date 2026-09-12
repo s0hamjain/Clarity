@@ -79,7 +79,9 @@ func (w *Worker) fanOut(
 			// this scene only.
 			defer func() {
 				if p := recover(); p != nil {
-					slog.Error("scene panicked", "job_id", jobID, "scene", i, "panic", p)
+					slog.Error("scene panicked",
+						"job_id", jobID, "scene", scene.Index,
+						"request_id", agent.RequestIDFrom(ctx), "panic", p)
 				}
 				// The write stays inside the lock. Incrementing under the lock
 				// and then writing outside it lets a goroutine holding 3 reach
@@ -93,7 +95,9 @@ func (w *Worker) fanOut(
 
 			workDir := filepath.Join(WorkRoot(jobID), fmt.Sprintf("scene%d", scene.Index))
 			if err := os.MkdirAll(workDir, 0o755); err != nil {
-				slog.Error("create scene work dir", "job_id", jobID, "scene", i, "error", err)
+				slog.Error("create scene work dir",
+					"job_id", jobID, "scene", scene.Index,
+					"request_id", agent.RequestIDFrom(ctx), "error", err)
 				return
 			}
 

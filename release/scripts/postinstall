@@ -1,0 +1,57 @@
+#!/bin/bash
+#
+# Runs as root after the bundle is installed. Its whole job is to make Clarity
+# start at login for the person who installed it.
+#
+# The trap here: pkgbuild scripts run as root, but a LaunchAgent belongs to a
+# user, and `launchctl load` as root loads into root's session — where there is
+# no menu bar. So everything below is done as the console user, via their own
+# GUI domain.
+set -u
+
+PLIST_LABEL="com.clarity.app"
+APP_BINARY="/Applications/Clarity.app/Contents/MacOS/Clarity"
+
+# The user actually logged in at the window server, not $USER (which is root).
+CONSOLE_USER="$(/usr/bin/stat -f%Su /dev/console)"
+if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" ]]; then
+  echo "postinstall: no console user; skipping the start-at-login agent" >&2
+  exit 0
+fi
+CONSOLE_UID="$(/usr/bin/id -u "$CONSOLE_USER")"
+CONSOLE_HOME="$(/usr/bin/dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
+PLIST="$CONSOLE_HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+
+/bin/mkdir -p "$CONSOLE_HOME/Library/LaunchAgents"
+/bin/cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PLIST_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$APP_BINARY</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+</dict>
+</plist>
+PLISTEOF
+
+/usr/sbin/chown "$CONSOLE_USER" "$PLIST"
+/bin/chmod 644 "$PLIST"
+
+# Load it into the console user's GUI session, not root's. bootout first so
+# reinstalling over an existing copy replaces the agent instead of failing.
+/bin/launchctl bootout "gui/$CONSOLE_UID/$PLIST_LABEL" 2>/dev/null || true
+/bin/launchctl bootstrap "gui/$CONSOLE_UID" "$PLIST" 2>/dev/null \
+  || /bin/launchctl asuser "$CONSOLE_UID" /bin/launchctl load "$PLIST" 2>/dev/null \
+  || echo "postinstall: could not load the agent; Clarity will still run when opened by hand" >&2
+
+exit 0

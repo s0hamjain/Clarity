@@ -14,11 +14,6 @@ import (
 
 // Worker drives one job from a screenshot to a video: transcribe, fingerprint,
 // check the cache, explain, fan the scenes out, stitch, upload, done.
-//
-// Fake mode is not a separate pipeline. FAKE_AGENT swaps only the two model
-// calls for canned answers and FAKE_RENDER swaps only the render, so the server
-// P4 develops against walks exactly the code path a real job walks. Both flags
-// default on and are deleted in Sprint 4.
 type Worker struct {
 	cfg   *config.Config
 	jobs  Store
@@ -36,10 +31,10 @@ type Worker struct {
 	mu      sync.Mutex
 	running map[string]*jobCtl
 
-	// stepInterval is how long fake mode holds each status. One second matches
-	// the desktop app's poll interval, so P4 sees every status exactly once.
-	// Tests shorten it.
-	stepInterval time.Duration
+	// slots bounds how many jobs may be in flight at once (API.md §7). It is
+	// the back pressure behind 503 queue_full: without it, a burst of captures
+	// becomes an unbounded pile of goroutines all waiting on model calls.
+	slots chan struct{}
 }
 
 // jobCtl is the handle on one in-flight job. The mutex serializes the two
@@ -57,41 +52,54 @@ type jobCtl struct {
 // call so the fake can stand in until P2's Concat lands.
 type ConcatFunc func(ctx context.Context, clipPaths []string, outKey string) (videoURL string, err error)
 
+// QueueDepth is the most jobs that may be in flight at once (API.md §7).
+const QueueDepth = 32
+
 func NewWorker(cfg *config.Config, j Store, c CacheStore, a *agent.Client, concat ConcatFunc) *Worker {
 	return &Worker{
-		cfg:          cfg,
-		jobs:         j,
-		cache:        c,
-		agent:        a,
-		concat:       concat,
-		running:      make(map[string]*jobCtl),
-		stepInterval: time.Second,
+		cfg:     cfg,
+		jobs:    j,
+		cache:   c,
+		agent:   a,
+		concat:  concat,
+		running: make(map[string]*jobCtl),
+		slots:   make(chan struct{}, QueueDepth),
 	}
 }
 
-// sceneFunc decides how this job's scenes become clips. FAKE_AGENT gates it,
-// not FAKE_RENDER: /scenes/render is an agent endpoint, and the rendering it
-// triggers happens back inside /internal/render, which is always real.
+// ErrQueueFull is returned by Start when the coordinator is already running as
+// many jobs as it is willing to. The caller turns it into 503 queue_full.
+var ErrQueueFull = errors.New("job queue is full")
+
+// sceneFunc decides how this job's scenes become clips.
 func (w *Worker) sceneFunc(j *Job, storyboardTitle, category string) SceneFunc {
 	if w.renderScene != nil {
 		return w.renderScene // test override
-	}
-	if w.cfg.FakeAgent {
-		return FakeSceneFunc
 	}
 	return AgentSceneFunc(w.agent, w.cfg, j.ID, storyboardTitle, category, j.Guardrails)
 }
 
 // Start runs the pipeline for one job in its own goroutine and returns at once.
-// POST /api/jobs must not block on anything (FRD §23 rule 7).
-func (w *Worker) Start(j *Job, imageB64, mediaType string) {
-	ctx, cancel := context.WithCancel(context.Background())
+// POST /api/jobs must not block on anything (FRD §23 rule 7). It returns
+// ErrQueueFull when the coordinator is already at QueueDepth.
+func (w *Worker) Start(j *Job, imageB64, mediaType, requestID string) error {
+	select {
+	case w.slots <- struct{}{}:
+	default:
+		return ErrQueueFull
+	}
+
+	// The pipeline outlives the HTTP request, so it gets its own context — but
+	// it carries the request ID forward, so every line this job ever logs, in
+	// either service, can be grepped back to the capture that started it.
+	ctx, cancel := context.WithCancel(agent.WithRequestID(context.Background(), requestID))
 	ctl := &jobCtl{ctx: ctx, cancel: cancel}
 	w.mu.Lock()
 	w.running[j.ID] = ctl
 	w.mu.Unlock()
 
 	go func() {
+		defer func() { <-w.slots }()
 		defer w.forget(j.ID)
 		defer cleanupWorkDir(j.ID)
 		// Rule 7: a panic anywhere in the pipeline ends the job as failed
@@ -104,7 +112,12 @@ func (w *Worker) Start(j *Job, imageB64, mediaType string) {
 		}()
 		w.run(ctx, j, imageB64, mediaType)
 	}()
+	return nil
 }
+
+// InFlight is how many jobs are running right now. Used by /healthz and the
+// overload tests.
+func (w *Worker) InFlight() int { return len(w.slots) }
 
 // Cancel stops pending work for a job. Idempotent — cancelling a job that has
 // already finished leaves its terminal status alone.
@@ -162,13 +175,11 @@ const (
 
 // run is the pipeline for one job.
 func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
-	log := slog.With("job_id", j.ID)
-	log.Info("pipeline started",
-		"fake_agent", w.cfg.FakeAgent,
-		"fake_render", w.cfg.FakeRender,
-		"guardrails", j.Guardrails,
-		"quality", w.cfg.ManimQuality,
-	)
+	// Every line this pipeline logs carries both IDs, so a capture can be
+	// followed across the coordinator and the agent (whose thread_id is
+	// job_id/scene).
+	log := slog.With("job_id", j.ID, "request_id", agent.RequestIDFrom(ctx))
+	log.Info("pipeline started", "guardrails", j.Guardrails, "quality", w.cfg.ManimQuality)
 
 	// --- transcribing: read the problem off the screenshot ---
 	if !w.setStatus(ctx, j.ID, StatusTranscribing) {
@@ -289,14 +300,6 @@ func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 	if !w.setStatus(ctx, j.ID, StatusUploading) {
 		return
 	}
-	// Only the cache write separates `uploading` from `done`, so in fake mode
-	// hold it for a poll interval — otherwise P4 has a status they can never
-	// see on screen. In a real run it is genuinely near-instantaneous, because
-	// Concat has already done the uploading; see the note in P3_BACKEND
-	// Sprint 3 Step 2 ("status is for the UI").
-	if w.cfg.FakeAgent && !w.sleep(ctx) {
-		return
-	}
 
 	// Rule 10: the cache is written only now, after the upload succeeded, and
 	// never on any path above.
@@ -313,22 +316,10 @@ func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 // --- the three swappable steps -------------------------------------------
 
 func (w *Worker) transcribe(ctx context.Context, imageB64, mediaType string, guardrails bool) (*agent.VisionResponse, error) {
-	if w.cfg.FakeAgent {
-		if !w.sleep(ctx) {
-			return nil, ctx.Err()
-		}
-		return fakeVision(), nil
-	}
 	return w.agent.Vision(ctx, imageB64, mediaType, guardrails)
 }
 
 func (w *Worker) explain(ctx context.Context, req agent.ExplainRequest) (*agent.ExplainResponse, error) {
-	if w.cfg.FakeAgent {
-		if !w.sleep(ctx) {
-			return nil, ctx.Err()
-		}
-		return fakeExplain(), nil
-	}
 	return w.agent.Explain(ctx, req)
 }
 
@@ -341,12 +332,8 @@ func (w *Worker) concatAndUpload(ctx context.Context, clips []string, hash strin
 
 // --- job record helpers ---------------------------------------------------
 
-// setStatus advances the job, pausing first in fake mode so each status stays
-// visible for a poll interval.
+// setStatus advances the job.
 func (w *Worker) setStatus(ctx context.Context, id string, status Status) bool {
-	if w.cfg.FakeAgent && !w.sleep(ctx) {
-		return false
-	}
 	return w.update(ctx, id, Fields{"status": status})
 }
 
@@ -367,16 +354,6 @@ func (w *Worker) update(ctx context.Context, id string, fields Fields) bool {
 		return false
 	}
 	return true
-}
-
-// sleep waits one step unless the job is cancelled first.
-func (w *Worker) sleep(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(w.stepInterval):
-		return true
-	}
 }
 
 // fail ends a job with a code from API.md §4. It uses a fresh context, because
