@@ -1,58 +1,200 @@
-# Setup
+# Ambient Visual Learning Tool — Setup Guide
 
-Everything runs locally, using Docker for render isolation and a local
-S3-compatible store so nobody needs real AWS credentials to develop. Get the
-Docker image built first — it's the step most likely to take a while if left
-for later.
+**Version:** 3.0
 
-Assumes macOS with Homebrew. Adjust for Linux; Windows is on your own.
+This document walks every engineer through the full environment setup required to develop and run the whole system on one Mac. Complete **all sections** before starting sprint work. The two steps most likely to burn time if left for later are the `manim-worker` Docker build (§6) and the macOS permission prompts for the desktop app (§10) — do those first.
 
-## 0. Clone
+Assumes macOS 14+ on Apple Silicon with Homebrew. Linux works for everything except the desktop app and installer.
+
+---
+
+## Table of Contents
+
+1. [Prerequisites](#1-prerequisites)
+2. [Repository Setup](#2-repository-setup)
+3. [Anthropic API Key](#3-anthropic-api-key)
+4. [Voyage AI API Key (Embeddings)](#4-voyage-ai-api-key-embeddings)
+5. [MongoDB Atlas (Jobs, Cache, Snippet Corpus)](#5-mongodb-atlas-jobs-cache-snippet-corpus)
+6. [Docker + `manim-worker` Image](#6-docker--manim-worker-image)
+7. [MinIO (Local S3)](#7-minio-local-s3)
+8. [Agent Service — Python + FastAPI](#8-agent-service--python--fastapi)
+9. [Coordinator — Go](#9-coordinator--go)
+10. [Desktop App — Development Mode](#10-desktop-app--development-mode)
+11. [Building the Installer](#11-building-the-installer)
+12. [Environment Files](#12-environment-files)
+13. [Running Everything](#13-running-everything)
+14. [Verification Checklist](#14-verification-checklist)
+15. [Common Problems](#15-common-problems)
+
+---
+
+## 1. Prerequisites
+
+### System Requirements
+- macOS 14 Sonoma or 15 Sequoia, Apple Silicon
+- 16 GB RAM recommended (Docker + several concurrent Manim renders)
+- ~10 GB free disk (Docker image is ~3 GB)
+
+### Core Tools
+
+```sh
+xcode-select --install                       # compilers, git
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install git python@3.12 go ffmpeg create-dmg
+brew install --cask docker
+```
+
+### Verify installations
+
+```sh
+git --version          # 2.40+
+python3.12 --version   # 3.12.x
+go version             # go1.22+
+ffmpeg -version        # any recent
+docker --version       # 27+
+open -a Docker         # start Docker Desktop; wait for "Docker Desktop is running"
+```
+
+---
+
+## 2. Repository Setup
+
+### 2.1 Clone
 
 ```sh
 git clone https://github.com/s0hamjain/HackCMU.git
 cd HackCMU
 ```
 
-## 1. Anthropic API key
+### 2.2 Directory skeleton
 
-Everyone needs one, even if you're not working on `agent/` — you'll be running
-the full stack locally.
+Each person creates their own top-level directory in Sprint 1 (see `FILE_STRUCTURE.md`). Nothing under `agent/`, `server/`, `desktop/`, `docker/`, or `samples/` exists at the start.
 
-```sh
-export ANTHROPIC_API_KEY=sk-ant-...
+### 2.3 Git Branch Strategy
+
+Each person works on their own branch per sprint:
+
+```
+p1/sprint-N-short-description
+p2/sprint-N-short-description
+p3/sprint-N-short-description
+p4/sprint-N-short-description
 ```
 
-Put it in your shell profile. Never commit it. `.env` files are gitignored.
+Merge to `main` **only at sprint sync points**, in the order and with the protocol in `docs/WORK_SPLIT.md → Merge Protocol`. The one exception: a change to `docs/FRD.md` goes to `main` immediately, in its own commit, and is announced — everyone is building against it.
+
+---
+
+## 3. Anthropic API Key
+
+Everyone needs one — you'll run the full stack locally.
+
+1. Go to https://console.anthropic.com → API Keys → Create Key.
+2. Put it in `agent/.env` as `ANTHROPIC_API_KEY=sk-ant-...` (§12). Never commit it.
 
 Sanity check:
 
 ```sh
 pip install anthropic
-python -c "import anthropic; c=anthropic.Anthropic(); print(c.models.retrieve('claude-opus-5').display_name)"
+ANTHROPIC_API_KEY=sk-ant-... python3 -c "import anthropic; c=anthropic.Anthropic(); print(c.models.retrieve('claude-opus-5').display_name)"
 ```
 
-## 2. Docker — build the image early
+---
+
+## 4. Voyage AI API Key (Embeddings)
+
+Voyage AI provides the embedding model (`voyage-code-3`) used to index the Manim snippet corpus and to embed scene queries. It is owned by MongoDB and pairs with Atlas Vector Search.
+
+1. Go to https://dash.voyageai.com → sign up → API Keys → Create.
+2. Put it in `agent/.env` as `VOYAGE_API_KEY=pa-...`.
+
+Sanity check:
 
 ```sh
-brew install --cask docker
-open -a Docker   # start Docker Desktop, wait for it to say "running"
-docker --version
+pip install voyageai
+VOYAGE_API_KEY=pa-... python3 -c "import voyageai; r=voyageai.Client().embed(['hello'], model='voyage-code-3', input_type='query'); print(len(r.embeddings[0]))"
+# → 1024
 ```
 
-### Build `manim-worker` — before writing any render/ code
+That number (1024) must match `numDimensions` in the vector index (§5.4).
 
-This image is Python + Manim CE + LaTeX + `dvisvgm` + ffmpeg, baked in once so
-no render pays an install cost.
+---
+
+## 5. MongoDB Atlas (Jobs, Cache, Snippet Corpus)
+
+One free-tier cluster holds everything persistent: `jobs`, `cache`, and `manim_snippets` (with its vector index). One person creates the cluster and shares the connection string; everyone points at the same cluster.
+
+### 5.1 Create the cluster
+1. https://cloud.mongodb.com → sign up → **Create** → **M0 Free** → region closest to you → name it `avlt`.
+2. Wait for deployment (~2 min).
+
+### 5.2 Database user
+1. **Security → Database Access → Add New Database User.**
+2. Username `avlt`, autogenerate a password, role **Read and write to any database**. Save the password.
+
+### 5.3 Network access
+1. **Security → Network Access → Add IP Address → Allow Access from Anywhere** (`0.0.0.0/0`).
+   Fine for development on a free cluster. Tighten later if it ever matters.
+
+### 5.4 Connection string
+1. **Database → Connect → Drivers → Python**. Copy the `mongodb+srv://...` string.
+2. Replace `<password>`, append `/avlt`. Put it in **both** `agent/.env` and `server/.env` as `MONGODB_URI`.
+
+### 5.5 Vector Search index
+
+The `manim_snippets` collection needs an Atlas Vector Search index named `snippets_vector`. Create it via the seed script (preferred) or the UI.
+
+**Via script** (P1 owns this; run once after §8):
+```sh
+cd agent && python scripts/seed_snippets.py --create-index
+```
+
+**Via UI:** Database → Browse Collections → `avlt.manim_snippets` → **Search Indexes → Create → Atlas Vector Search → JSON Editor**, name `snippets_vector`:
+
+```json
+{
+  "fields": [
+    { "type": "vector", "path": "embedding", "numDimensions": 1024, "similarity": "cosine" },
+    { "type": "filter", "path": "verified" },
+    { "type": "filter", "path": "category" }
+  ]
+}
+```
+
+Wait for status **Active** (~1 min). M0 supports up to 3 search indexes; we use one.
+
+### 5.6 TTL indexes
+
+The coordinator creates these at startup (`server/internal/store/indexes.go`). No manual step. If you want to confirm:
+
+```js
+db.jobs.getIndexes()    // expect { updated_at: 1 } with expireAfterSeconds: 86400
+db.cache.getIndexes()   // expect { created_at: 1 } with expireAfterSeconds: 604800
+```
+
+### 5.7 Verify
+
+```sh
+pip install pymongo
+MONGODB_URI='mongodb+srv://...' python3 -c "import os,pymongo; print(pymongo.MongoClient(os.environ['MONGODB_URI']).admin.command('ping'))"
+# → {'ok': 1.0}
+```
+
+---
+
+## 6. Docker + `manim-worker` Image
+
+Every scene renders inside a container from this image. Build it before writing any render code — it takes real minutes.
+
+### 6.1 Build
 
 ```sh
 docker build -t manim-worker -f docker/manim-worker/Dockerfile docker/manim-worker
 ```
 
-### The smoke test — run it against the image, not the host
+The Dockerfile (P2 owns it) installs Python 3.12, Manim CE, a TeX distribution with `dvisvgm`, and ffmpeg.
 
-A LaTeX check on your host tells you nothing about whether the *image* has
-LaTeX. Run the real thing:
+### 6.2 Smoke test — against the image, not the host
 
 ```sh
 mkdir -p /tmp/manim-smoke
@@ -64,176 +206,253 @@ class GeneratedScene(Scene):
         self.play(Write(t))
         self.wait(1)
 PY
-docker run --rm -v /tmp/manim-smoke:/work manim-worker \
+docker run --rm --network none -v /tmp/manim-smoke:/work manim-worker \
     manim -ql /work/scene.py GeneratedScene -o out.mp4 --media_dir /work/media
 ls /tmp/manim-smoke/media/videos/scene/*/out.mp4
 ```
 
-If the MP4 exists, you're good. If it dies on `latex` or `dvisvgm`, the
-`Dockerfile` is missing a TeX package — fix the image, not your host, and
-rebuild. Nothing downstream works until this passes.
+If the MP4 exists, the image is right. If it dies on `latex` or `dvisvgm`, the Dockerfile is missing a TeX package — fix the image and rebuild. There is no host-side fix.
 
-Flags you'll use: `-ql` (480p, fast, for dev) · `-qm` (720p, for production) ·
-`-o <name>` (output filename) · `--media_dir` (keep scratch output inside the
-per-job temp dir, not wherever manim feels like).
+Flags: `-ql` 480p (dev) · `-qm` 720p (release) · `-o` filename · `--media_dir` keeps scratch inside the mounted dir.
 
-## 3. MinIO — local S3, no AWS account needed
+---
+
+## 7. MinIO (Local S3)
+
+MinIO speaks the S3 API. Locally nobody needs AWS credentials; the same Go code talks to real S3 by changing `S3_ENDPOINT`.
 
 ```sh
 docker run -d --name minio -p 9000:9000 -p 9001:9001 \
     -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-    -v minio-data:/data \
-    minio/minio server /data --console-address ":9001"
-```
+    -v minio-data:/data minio/minio server /data --console-address ":9001"
 
-Console at `http://localhost:9001` (minioadmin / minioadmin). Create a bucket
-named `hackcmu-renders` there, or via the client:
-
-```sh
 brew install minio/stable/mc
 mc alias set local http://localhost:9000 minioadmin minioadmin
-mc mb local/hackcmu-renders
-mc anonymous set download local/hackcmu-renders   # public-read, matches CONTRACTS default
+mc mb local/avlt-renders
+mc anonymous set download local/avlt-renders     # public-read, matches FRD §14.6
 ```
 
-Go's S3 client (AWS SDK v2) talks to MinIO the same way it talks to real AWS —
-only `S3_ENDPOINT` changes. In production, point `S3_ENDPOINT` at real AWS
-instead and re-verify.
+Console: http://localhost:9001 (minioadmin / minioadmin).
 
-## 4. Python (agent service)
+---
+
+## 8. Agent Service — Python + FastAPI
 
 ```sh
-brew install python@3.12
 cd agent
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt   # anthropic, fastapi, uvicorn, pydantic, sentence-transformers
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt     # anthropic fastapi uvicorn pydantic voyageai pymongo python-dotenv
+cp .env.example .env                 # fill in §12 values
 ```
 
-`sentence-transformers` is for local, no-API-key embeddings used by
-`/manim-docs` retrieval — CPU-only, downloads a small model on first run. If
-it isn't installed, retrieval falls back to keyword matching; the service
-still runs either way.
-
-Run:
+### 8.1 Seed the snippet corpus
 
 ```sh
-uvicorn main:app --port 8000 --reload
+python scripts/seed_snippets.py --create-index      # first time: creates snippets_vector
+python scripts/seed_snippets.py                     # embeds and upserts every samples/*.py
 ```
 
-Check: `curl localhost:8000/healthz`
-
-## 5. Go (server + render)
+### 8.2 Run
 
 ```sh
-brew install go        # 1.22+
+uvicorn app.main:app --port 8000 --reload
+curl localhost:8000/healthz
+# → {"ok":true,"anthropic":true,"voyage":true,"atlas":true,"snippets_verified":N}
+```
+
+---
+
+## 9. Coordinator — Go
+
+```sh
 cd server
+cp .env.example .env                 # fill in §12 values
 go mod download
 go run ./cmd/server
+curl localhost:8080/healthz
+# → {"ok":true,"atlas":true,"docker":true,"s3":true,"agent":true}
 ```
 
-Check: `curl localhost:8080/healthz`
+`docker`, `s3`, and `agent` are checked once at boot. If any is `false`, fix that service and restart.
 
-## 6. Redis
+---
+
+## 10. Desktop App — Development Mode
+
+Run from source before building the installer. **Use Terminal.app for all of this, consistently** — macOS grants Screen Recording and Input Monitoring permissions to the *host application* that launched Python (Terminal, iTerm, or VS Code), and switching terminals means re-granting.
+
+### 10.1 Install
 
 ```sh
-brew install redis
-brew services start redis     # or: redis-server, in its own terminal
-redis-cli ping                # → PONG
+cd desktop
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt     # rumps pynput pywebview pillow requests pyinstaller
 ```
 
-Default `localhost:6379`, no auth. The server reads `REDIS_ADDR` if you need to
-change it.
-
-## 7. Angular (client)
+### 10.2 Grant permissions — once
 
 ```sh
-brew install node             # 20+
-npm install -g @angular/cli
-cd client
-npm install
+screencapture -i /tmp/x.png          # → macOS asks for Screen Recording. Grant it.
 ```
-
-Three projects in one workspace — build each separately:
+**Quit and reopen Terminal.** Run it again; a crosshair should appear.
 
 ```sh
-ng build extension-panel      # → client/dist/extension-panel
-ng build web-app --watch      # → client/dist/web-app, rebuilds on save
+python -c "from pynput import keyboard; print('ok')"
+python -m avlt --once                # → macOS asks for Input Monitoring. Grant it.
 ```
+**Quit and reopen Terminal** again.
 
-### Load the extension
-
-1. `chrome://extensions` → toggle **Developer mode** (top right).
-2. **Load unpacked** → select `client/dist/extension-panel/`.
-3. Pin it. The hotkey is set in `manifest.json` under `commands`; you can
-   rebind at `chrome://extensions/shortcuts`.
-4. Reload the extension after every change to `manifest.json` or the
-   background script. Panel-only changes usually just need a rebuild
-   (`ng build extension-panel`) and the panel reopened — the extension itself
-   doesn't need reloading for those.
-
-Server URL is set in `client/projects/extension-panel/src/config.ts`.
-
-### Web app
+### 10.3 Run
 
 ```sh
-cd client/dist/web-app && python3 -m http.server 3000
+python -m avlt                       # menu bar icon appears; ⌘⇧E is live
+python -m avlt --once                # one capture without the hotkey — for testing the pipeline
 ```
 
-Open `http://localhost:3000`.
+Server URL defaults to `http://localhost:8080`. Change it via the menu bar **Server…** item or edit `~/Library/Application Support/AVLT/config.json`.
 
-## 8. Everything at once
-
-Six things running at once (Docker Desktop + `docker run`, or one `tmux`):
+### 10.4 UI development without the backend
 
 ```sh
-docker ps            # confirm minio is up (started in step 3)
-redis-server
-cd agent  && source .venv/bin/activate && uvicorn main:app --port 8000
-cd server && go run ./cmd/server
-cd client && ng build web-app --watch
-cd client/dist/web-app && python3 -m http.server 3000
+python desktop/stub/stub_server.py   # fake coordinator on :8080, walks a job through every status on a timer
 ```
 
-Then `curl localhost:8080/healthz` should return
-`{"ok":true,"redis":true,"docker":true,"s3":true,"agent":true}`.
+---
 
-## Environment variables
+## 11. Building the Installer
 
-| Var | Default | Used by |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | — | agent |
-| `AGENT_URL` | `http://localhost:8000` | server |
-| `REDIS_ADDR` | `localhost:6379` | server |
-| `S3_ENDPOINT` | `http://localhost:9000` (MinIO) | server (render component) |
-| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `minioadmin` / `minioadmin` | server (render component) |
-| `RENDER_BUCKET` | `hackcmu-renders` | server (render component) |
-| `RENDER_CONCURRENCY` | `NumCPU/2` | server |
-| `RENDER_TIMEOUT_SEC` | `120` | server |
-| `PORT` | `8080` | server |
+P4 owns these scripts; anyone can run them.
 
-## Common problems
+### 11.1 Self-signed certificate — once per machine
 
-- **`latex: command not found` inside a `docker run`** — the `Dockerfile`
-  doesn't install a TeX distribution or `dvisvgm`. Fix the image, rebuild,
-  re-run the smoke test. There is no host-side fix for this.
-- **`docker: command not found` / daemon not running** — Docker Desktop has to
-  actually be open, not just installed. Check the whale icon in the menu bar.
-- **MinIO bucket exists but uploads 403** — the bucket needs
-  `mc anonymous set download` (or an equivalent policy) for public-read URLs
-  to work, matching the CONTRACTS default. Switch to presigned URLs if you'd
-  rather not make it public.
-- **`ffmpeg concat` fails or produces a broken file** — almost always a codec
-  mismatch between scenes. Confirm every scene in the job used the same manim
-  quality flag (`-ql` vs `-qm`) — see CONTRACTS §4.
-- **Extension hotkey does nothing** — another extension owns it. Rebind at
-  `chrome://extensions/shortcuts`.
-- **`captureVisibleTab` returns nothing** — you're on a `chrome://` page or the
-  Web Store. Chrome refuses. Try a normal page.
-- **Cache seems to ignore prompt changes** — you didn't bump `PromptVersion`.
-  It's in `server/internal/cache/key.go`.
-- **Cache seems to ignore the guardrails toggle** — check `guardrails` is
-  actually part of the hash input, not just stored alongside the job. See
-  CONTRACTS §3.
-- **CORS error in the extension** — server must send
-  `Access-Control-Allow-Origin: *`. Check it's on *every* route, including
-  404s and 5xxs.
+macOS keys the Screen Recording permission to the app's code signature. An unsigned build changes identity every rebuild and the permission resets. A free self-signed certificate gives a stable identity.
+
+1. **Keychain Access → Certificate Assistant → Create a Certificate.**
+2. Name `AVLT Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**. Create.
+
+### 11.2 Build the `.app`
+
+```sh
+cd desktop && source .venv/bin/activate
+./scripts/build_app.sh               # pyinstaller → dist/AVLT.app, patches Info.plist (LSUIElement), codesigns with "AVLT Dev"
+open dist/AVLT.app                   # menu bar icon should appear
+```
+
+### 11.3 Build the `.dmg`
+
+```sh
+./scripts/build_dmg.sh               # create-dmg → dist/AVLT.dmg
+```
+
+### 11.4 Build the `.pkg` (optional — adds start-at-login)
+
+```sh
+./scripts/build_pkg.sh               # pkgbuild + productbuild → dist/AVLT.pkg; post-install writes the LaunchAgent
+```
+
+### 11.5 Install like a user would
+
+Mount the DMG, drag to Applications, open. On macOS 15 the unsigned app is blocked: **System Settings → Privacy & Security → scroll down → Open Anyway**. Grant Screen Recording, relaunch, grant Input Monitoring, relaunch. `⌘⇧E`.
+
+### 11.6 Release
+
+```sh
+gh release create v0.1.0 desktop/dist/AVLT.dmg desktop/dist/AVLT.pkg --title "AVLT 0.1.0" --notes-file desktop/RELEASE_NOTES.md
+```
+
+---
+
+## 12. Environment Files
+
+### 12.1 `agent/.env`
+
+```sh
+ANTHROPIC_API_KEY=sk-ant-...
+VOYAGE_API_KEY=pa-...
+MONGODB_URI=mongodb+srv://avlt:<password>@avlt.xxxxx.mongodb.net/avlt
+MONGODB_DB=avlt
+EMBED_MODEL=voyage-code-3
+```
+
+### 12.2 `server/.env`
+
+```sh
+PORT=8080
+AGENT_URL=http://localhost:8000
+MONGODB_URI=mongodb+srv://avlt:<password>@avlt.xxxxx.mongodb.net/avlt
+MONGODB_DB=avlt
+S3_ENDPOINT=http://localhost:9000
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+RENDER_BUCKET=avlt-renders
+RENDER_CONCURRENCY=4
+RENDER_TIMEOUT_SEC=120
+MANIM_QUALITY=-ql
+```
+
+### 12.3 Desktop — `~/Library/Application Support/AVLT/config.json`
+
+Created on first run. No secrets.
+
+```json
+{ "server_url": "http://localhost:8080", "guardrails": false, "hotkey": "<cmd>+<shift>+e" }
+```
+
+### 12.4 Security rules
+- `.env` files are gitignored. Never commit one. Never paste a key into chat.
+- The desktop app never holds an API key. If you find yourself adding one, stop.
+- `MONGODB_URI` contains a password. Same rules.
+
+---
+
+## 13. Running Everything
+
+Four processes plus Docker:
+
+```sh
+open -a Docker && docker start minio
+cd agent   && source .venv/bin/activate && uvicorn app.main:app --port 8000
+cd server  && go run ./cmd/server
+cd desktop && source .venv/bin/activate && python -m avlt
+```
+
+Then `⌘⇧E`, drag a box around a problem, press Enter.
+
+---
+
+## 14. Verification Checklist
+
+| # | Check | Command / Action | Expected |
+|---|---|---|---|
+| 1 | Python | `python3.12 --version` | 3.12.x |
+| 2 | Go | `go version` | 1.22+ |
+| 3 | Docker running | `docker info` | no error |
+| 4 | `manim-worker` built | `docker images manim-worker` | one row |
+| 5 | Container renders LaTeX | §6.2 smoke test | `out.mp4` exists |
+| 6 | MinIO up + bucket public | `mc anonymous get local/avlt-renders` | `download` |
+| 7 | Atlas reachable | §5.7 ping | `{'ok': 1.0}` |
+| 8 | Vector index active | Atlas UI → Search Indexes | `snippets_vector` **Active** |
+| 9 | Voyage key works | §4 sanity check | `1024` |
+| 10 | Anthropic key works | §3 sanity check | `Claude Opus 5` |
+| 11 | Corpus seeded | `curl localhost:8000/healthz` | `snippets_verified` ≥ 20 |
+| 12 | Coordinator healthy | `curl localhost:8080/healthz` | all `true` |
+| 13 | Screen Recording granted | `screencapture -i /tmp/x.png` from Terminal | crosshair appears |
+| 14 | Input Monitoring granted | `python -m avlt` then `⌘⇧E` | crosshair appears |
+| 15 | `.env` ignored | `git check-ignore agent/.env server/.env` | both printed |
+
+---
+
+## 15. Common Problems
+
+- **`latex: command not found` inside `docker run`** — Dockerfile lacks TeX or `dvisvgm`. Fix the image, rebuild, re-run §6.2.
+- **Docker daemon not running** — Docker Desktop must be open, not just installed.
+- **`$vectorSearch` returns nothing** — index not yet **Active**, or `numDimensions` ≠ 1024, or every document is `verified: false`. Check `snippets_verified` in `/healthz`.
+- **Embeddings dimension mismatch on insert** — `EMBED_MODEL` changed. Drop and recreate the index, re-run the seed script.
+- **MinIO uploads succeed but the panel can't play the video** — bucket isn't public-read. `mc anonymous set download local/avlt-renders`.
+- **`ffmpeg concat` fails** — codec mismatch between scenes. Confirm every scene in the job used the same `MANIM_QUALITY`.
+- **Hotkey does nothing** — Input Monitoring not granted to *this* terminal app, or you didn't restart it after granting. System Settings → Privacy & Security → Input Monitoring.
+- **`screencapture` produces no file and no crosshair** — Screen Recording not granted to this terminal app. Same fix.
+- **"Python is accessing your screen" prompt keeps appearing** — macOS 15 re-prompts periodically for apps not using ScreenCaptureKit. Click Allow. The built `.app` with a stable signature prompts less.
+- **Built `.app` asks for permissions again after every rebuild** — it isn't being signed with the `AVLT Dev` certificate. Check `build_app.sh`'s `codesign` step.
+- **Cache ignores prompt changes** — `PromptVersion` not bumped. `server/internal/cache/key.go`.
+- **Job stuck in `rendering`** — a goroutine panicked without `recover()`, or `updated_at` wasn't refreshed and the TTL index deleted the job. Check coordinator logs.
