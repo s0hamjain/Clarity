@@ -1,21 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#4338CA"/>
-      <stop offset="55%" stop-color="#4F46E5"/>
-      <stop offset="100%" stop-color="#06B6D4"/>
+      <stop offset="0%" stop-color="#151B4D"/>
+      <stop offset="55%" stop-color="#1E2A78"/>
+      <stop offset="100%" stop-color="#2447A6"/>
     </linearGradient>
-    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#FFFFFF"/>
-      <stop offset="100%" stop-color="#E0F2FE"/>
-    </linearGradient>
-    <radialGradient id="sheen" cx="30%" cy="22%" r="75%">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.16"/>
-      <stop offset="45%" stop-color="#FFFFFF" stop-opacity="0.04"/>
+    <radialGradient id="sheen" cx="30%" cy="18%" r="80%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.14"/>
+      <stop offset="45%" stop-color="#FFFFFF" stop-opacity="0.03"/>
       <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
     </radialGradient>
     <filter id="soft" x="-50%" y="-50%" width="200%" height="200%">
-      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-color="#0B1B4D" flood-opacity="0.35"/>
+      <feDropShadow dx="0" dy="18" stdDeviation="26" flood-color="#050A2A" flood-opacity="0.45"/>
     </filter>
   </defs>
 
@@ -23,28 +19,23 @@
   <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
   <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#sheen)"/>
 
-  <!-- focus / aperture ring with an opening, filled by a play triangle: "bring the problem into focus, then watch it" -->
+  <!-- faceted gem: "clarity" as in a clear-cut stone, catching light from every angle -->
   <g filter="url(#soft)">
-    <path d="
-      M 512 236
-      A 276 276 0 1 1 316.5 350
-      "
-      fill="none" stroke="url(#ring)" stroke-width="54" stroke-linecap="round"/>
+    <!-- crown facets -->
+    <polygon points="452,266 322,430 476,430 476,266" fill="#CFE8FA"/>
+    <polygon points="476,266 548,266 548,430 476,430" fill="#FFFFFF"/>
+    <polygon points="548,266 702,430 548,430" fill="#9FC9E8"/>
 
-    <!-- play triangle sitting in the ring's opening, pointing toward the gap -->
-    <path d="M 452 392 L 452 656 L 676 524 Z" fill="url(#ring)"/>
+    <!-- girdle highlight line -->
+    <polygon points="322,430 702,430 702,438 322,438" fill="#7FB2DC"/>
+
+    <!-- pavilion facets -->
+    <polygon points="322,438 476,438 512,742" fill="#EAF6FE"/>
+    <polygon points="476,438 548,438 512,742" fill="#B9DEF3"/>
+    <polygon points="548,438 702,438 512,742" fill="#6FA7D6"/>
   </g>
 
-  <!-- insight spark -->
-  <path d="
-    M 748 208
-    L 766 258
-    L 816 276
-    L 766 294
-    L 748 344
-    L 730 294
-    L 680 276
-    L 730 258
-    Z"
-    fill="#FDE68A"/>
+  <!-- twin sparkle: the light the gem is catching -->
+  <path d="M 706 246 L 720 284 L 758 298 L 720 312 L 706 350 L 692 312 L 654 298 L 692 284 Z" fill="#FDE68A"/>
+  <path d="M 300 300 L 308 320 L 328 328 L 308 336 L 300 356 L 292 336 L 272 328 L 292 320 Z" fill="#FDE68A" opacity="0.85"/>
 </svg>
