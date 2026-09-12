@@ -112,6 +112,8 @@ server/internal/render/
 
 ## Sprint 1 — The image, the smoke test, five samples, the pre-check
 
+(Budget: ~3 h.)
+
 **Goal:** LaTeX renders inside the container (this is the single most likely thing to be broken in the whole project — find out now), five samples exist and have been watched, and code can be checked before it runs.
 
 ### Step 1 — Dockerfile (1 h, mostly waiting)
@@ -148,6 +150,8 @@ Rules for every sample: docstring header as above; relative positioning only (`n
 
 ## Sprint 2 — `Render()`, the semaphore, the test, samples to 20
 
+(Budget: ~4.75 h.)
+
 **Goal:** a string of Python becomes an MP4 (or a traceback) through a real container with a real timeout; the library is big enough to be useful.
 
 ### Step 1 — `Render()` (2 h)
@@ -178,6 +182,8 @@ Cover: `Table`; `Code` block with a highlighted line; `NumberLine` with a moving
 ---
 
 ## Sprint 3 — `RenderWithRepair()`, `Concat()`, S3
+
+(Budget: ~3.75 h.)
 
 **Goal:** the full path from "scene" to "video URL" works, including repair and stitching.
 
@@ -214,6 +220,8 @@ In `docker/README.md`: the real-S3 bucket needs a lifecycle rule expiring `rende
 
 ## Sprint 4 — Harden
 
+(Budget: ~2.5 h.)
+
 **Goal:** nothing leaks, nothing hangs, release quality works.
 
 1. **Cleanup audit:** after a batch of 10 renders including a timeout and a pre-check failure, `docker ps -a` shows nothing and the temp dir is empty.
@@ -227,7 +235,7 @@ In `docker/README.md`: the real-S3 bucket needs a lifecycle rule expiring `rende
 
 ---
 
-## Sprint 5 — Release
+## Sprint 5 — Release (Budget: ~1 h)
 
 - `MANIM_QUALITY=-qm` for the release configuration.
 - Run `render_test.go` one last time. Freeze `samples/`.
@@ -242,6 +250,7 @@ In `docker/README.md`: the real-S3 bucket needs a lifecycle rule expiring `rende
 3. **Before the sync point:** `git fetch origin && git rebase origin/main`, fix conflicts, `go test ./internal/render/`, push.
 4. **At the sync point:** merge order is **P3 → P1 → P2 → P4**. You're third. Since you and P3 share `server/go.mod`, rebase carefully — `go mod tidy` conflicts are the usual snag.
 5. After the merge: back to step 1.
+6. **Finished your sprint early?** Take the next item from the Overflow backlog in WORK_SPLIT.md — anyone can, regardless of role.
 
 Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 

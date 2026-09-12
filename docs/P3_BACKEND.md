@@ -1,6 +1,6 @@
 # Clarity — P3: Backend (Coordinator)
 
-**You are P3. Your job in one sentence:** build the Go server the desktop app talks to — accept a screenshot, create a job, and drive that job through every step by calling P1's endpoints and P2's functions in the right order, recording status in MongoDB the whole way.
+**You are P3. Your job in one sentence:** build the Go server the desktop app talks to — accept a screenshot, create a job, and drive that job through every step by calling P1's endpoints and P2's functions in the right order, recording status in MongoDB the whole way — and ship the release (PKG, start-at-login, GitHub Release) once P4 hands you the `.app`.
 
 You contain no AI logic and no rendering logic. You are a dispatcher. Your hardest problems are ordering, concurrency, and never leaving a job stuck.
 
@@ -14,6 +14,8 @@ You contain no AI logic and no rendering logic. You are a dispatcher. Your harde
 4. **Cache.** Same problem twice → skip everything and return the stored result in under a second.
 5. **Cancel.** `DELETE /api/jobs/{id}` stops pending work.
 6. **Never hang.** Every goroutine recovers from panics. Every job ends in `done`, `failed`, or `cancelled`.
+7. **Fake mode from hour one.** `FAKE_AGENT=1 FAKE_RENDER=1` makes your server walk any job through every status on a timer with sample data — this is what P4 builds the UI against, so it exists at the end of Sprint 1.
+8. **Ship it.** `release/` is yours: the `.pkg` installer with a LaunchAgent, the release notes, and the `gh release create`.
 
 ---
 
@@ -28,6 +30,7 @@ You contain no AI logic and no rendering logic. You are a dispatcher. Your harde
 | `server/internal/agent/**` — HTTP client for P1's service | Anything in `desktop/` (P4) |
 | `server/internal/jobs/**` — the worker, the fan-out | |
 | `server/go.mod` — you own the module; P2 adds dependencies through you or with notice | |
+| `release/**` — `build_pkg.sh`, `postinstall.sh`, `publish.sh`, `RELEASE_NOTES.md` | `desktop/**` — P4 builds the `.app` and `.dmg`; you package and publish what they hand you |
 
 ---
 
@@ -40,7 +43,7 @@ You contain no AI logic and no rendering logic. You are a dispatcher. Your harde
 | `Render`, `RenderWithRepair`, `Concat` | P2 | **You** | [FRD §14.1](FRD.md#14-render-pipeline) |
 | `jobs` and `cache` documents | **You** | P4 reads the job shape through your API | [FRD §9.1–9.2](FRD.md#9-database-schema-mongodb-atlas) |
 
-**You start on fakes.** Hardcode P1's responses and copy a sample MP4 instead of rendering. Swap in the real things as they land (Sprint 2 for P1, Sprint 3 for P2).
+**You start on fakes, and your fakes are everyone's stub.** `FAKE_AGENT=1` hardcodes P1's responses; `FAKE_RENDER=1` copies a sample MP4 instead of rendering. Together they make your server walk a job through every status on a timer — P4 builds the whole UI against that. Swap in the real things as they land (Sprint 2 for P1, Sprint 3 for P2). Delete the flags in Sprint 4.
 
 ---
 
@@ -80,9 +83,22 @@ server/
         └── scenes.go                # bounded parallel fan-out over scenes
 ```
 
+And, from Sprint 4:
+
+```
+release/
+├── build_pkg.sh                     # pkgbuild + productbuild → dist/Clarity.pkg (takes P4's dist/Clarity.app)
+├── publish.sh                       # gh release create v0.1.0 with the .dmg and .pkg
+├── RELEASE_NOTES.md                 # install steps, permissions, known issues
+└── scripts/
+    └── postinstall                  # writes + loads ~/Library/LaunchAgents/com.clarity.app.plist
+```
+
 ---
 
 ## Sprint 1 — HTTP skeleton, Atlas job store, a fake pipeline, the cache key
+
+(Budget: ~3.25 h.)
 
 **Goal:** the desktop app (or `curl`) can create a job and watch it walk through every status, with a fake explanation and a fake video URL. Jobs live in Atlas and expire.
 
@@ -98,10 +114,10 @@ server/
 - `store/cache.go`: `Get(hash)`, `Put(hash, videoURL, explanation)`.
 - `store/indexes.go`: create both TTL indexes at boot (FRD §9.1–9.2). Idempotent — `CreateOne` with the same spec is a no-op.
 
-### Step 3 — Fake worker (45 min)
-- `jobs/worker.go`: a goroutine that sleeps 1 s per status: `queued → transcribing → explaining → generating → rendering → concatenating → uploading → done`. At `generating` write a hardcoded markdown explanation and `scenes_total: 3`. At `rendering` increment `scenes_done` once per second. At `done` set `video_url` to a sample MP4 you've put in MinIO by hand.
+### Step 3 — Fake worker — this is P4's stub server too (1 h)
+- Behind `FAKE_AGENT=1 FAKE_RENDER=1` (both default to `1` until Sprint 4). `jobs/worker.go`: a goroutine that sleeps 1 s per status: `queued → transcribing → explaining → generating → rendering → concatenating → uploading → done`. At `generating` write a hardcoded markdown explanation and `scenes_total: 3`. At `rendering` increment `scenes_done` once per second. At `done` set `video_url` to a sample MP4 you've put in MinIO by hand.
 - `defer recover()` at the top of the goroutine → mark the job `failed` with `error: "internal"`.
-- This is now a better stub than P4's own — tell them.
+- Tell P4 the moment this runs — it's their server for Sprints 1–2. It must work with **no** Atlas, Docker, or API keys when both flags are on (an in-memory job map is fine in fake mode).
 
 ### Step 4 — Cache key (30 min)
 - `cache/key.go`: `const PromptVersion = "2026-09-12a"`; `Normalize(s)` = lowercase, trim, collapse every whitespace run (incl. newlines) to one space, nothing else; `Hash(problemText, userPrompt string, guardrails bool)` = `sha256(PromptVersion + "||" + Normalize(problemText) + "||" + Normalize(userPrompt) + "||" + "true"|"false")` hex, first 16 chars. **Exactly FRD §12.**
@@ -117,6 +133,8 @@ server/
 ---
 
 ## Sprint 2 — Real P1 calls, real cache, the fan-out skeleton
+
+(Budget: ~3.5 h.)
 
 **Goal:** a real screenshot produces a real explanation, saved the instant it arrives; a repeated screenshot hits the cache.
 
@@ -154,6 +172,8 @@ After the (fake) concat/upload: `store.Cache.Put(hash, videoURL, explanation)` �
 
 ## Sprint 3 — Wire the real render, finish the pipeline, cancel
 
+(Budget: ~3.25 h.)
+
 **Goal:** one capture → real video URL, all real; a closed result box cancels its job.
 
 ### Step 1 — Real `SceneFunc` (1 h)
@@ -190,27 +210,38 @@ Boot-time checks, refreshed every 60 s: Atlas ping, `docker info`, S3 `HeadBucke
 
 ---
 
-## Sprint 4 — Prove the cache across machines, break things on purpose
+## Sprint 4 — Prove the cache across machines, break things on purpose, build the PKG
 
-**Goal:** the cache works between two laptops; nothing you can kill leaves a job stuck.
+(Budget: ~4 h.)
+
+**Goal:** the cache works between two laptops; nothing you can kill leaves a job stuck; the `.pkg` installer exists.
 
 1. **Two-machine cache test (1 h).** Two Macs, same Atlas cluster, same problem captured at different zoom levels. The second must be `cached: true`. If not, log both `Normalize()` outputs and diff them — this is the moment you find out whether the cache design works at all.
 2. **Failure injection (1 h).** Stop the agent service mid-job → `failed`, not stuck. Stop Docker mid-render → scenes fail, job ends `done`/no video. Panic inside `SceneFunc` → siblings finish. Kill the coordinator mid-job and restart → the job record in Atlas is intact (it may never finish — that's acceptable; it must not corrupt).
 3. **Overload (30 min).** A bounded job queue (depth 32). Over the bound → `503 queue_full` with `Retry-After`.
 4. **`updated_at` audit (15 min).** Grep every `store.Jobs.Update` call — every one sets `updated_at`. A job that sits in `rendering` for 3 minutes must not expire.
+5. **Delete the fake flags (15 min).** `FAKE_AGENT` and `FAKE_RENDER` go away. Everything is real from here.
+6. **PKG installer (1 h).** P4 hands you `dist/Clarity.app` at their Sprint 4 Step 2. In `release/`:
+   - `build_pkg.sh`: `pkgbuild --component Clarity.app --install-location /Applications --scripts release/scripts --identifier com.clarity.app --version 0.1.0 Clarity-component.pkg` then `productbuild --package Clarity-component.pkg dist/Clarity.pkg`.
+   - `scripts/postinstall`: writes `~/Library/LaunchAgents/com.clarity.app.plist` (`RunAtLoad true`, `ProgramArguments /Applications/Clarity.app/Contents/MacOS/Clarity`) and `launchctl load`s it, so Clarity starts at login. Runs as the console user, not root — `pkgbuild` scripts run as root, so use `sudo -u "$USER"` / `launchctl asuser`.
+   - Install the `.pkg` on your own Mac. Log out, log in. Menu bar icon is there → it works.
+   - You're also the natural second-Mac tester for P4's DMG (their Sprint 4 Step 4). Write down what you hit — it's the seed of `release/RELEASE_NOTES.md`.
 
 ### Done when
 - [ ] Second laptop hits the cache in < 1 s.
 - [ ] Every injected failure ends in a terminal status.
 - [ ] `503` on overload.
+- [ ] `dist/Clarity.pkg` installs, and Clarity is in the menu bar after a fresh login.
+- [ ] Fake flags deleted.
 
 ---
 
-## Sprint 5 — Freeze
+## Sprint 5 — Freeze and publish (Budget: ~1 h)
 
 - All-green `/healthz` from a fresh boot on the shared cluster.
 - Pre-warm the cache with P1: 4–5 representative problems run end to end. Verify each with `GET /api/cache/{hash}`.
-- No code changes after the freeze.
+- **Publish.** P4 hands you a final `dist/Clarity.dmg` and `dist/Clarity.app` from clean `main`. Rebuild the `.pkg`. Finish `release/RELEASE_NOTES.md` (install steps incl. macOS 15 "Open Anyway", the two permissions, known issues). Then `release/publish.sh`: `gh release create v0.1.0 dist/Clarity.dmg dist/Clarity.pkg --title "Clarity 0.1.0" --notes-file release/RELEASE_NOTES.md`. P4 verifies the install from the release URL on a second Mac.
+- Tag `v0.1.0`. No code changes after.
 
 ---
 
@@ -220,6 +251,7 @@ Boot-time checks, refreshed every 60 s: Atlas ping, `docker info`, S3 `HeadBucke
 2. Commit small. Push whenever.
 3. **Before the sync point:** `git fetch origin && git rebase origin/main`, fix conflicts, `go build ./... && go test ./...`, push.
 4. **At the sync point:** merge order is **P3 → P1 → P2 → P4**. **You go first** — everyone else's work is built against your shapes. You are also the merge captain in Sprints 1 and 5.
+6. **Finished your sprint early?** Take the next item from the Overflow backlog in WORK_SPLIT.md — anyone can, regardless of role.
 5. After the merge: back to step 1.
 
 Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
@@ -247,4 +279,4 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 
 ## If you're blocked
 
-Sprint 1: nothing to wait for. Sprint 2: if P1's `/explain` isn't ready, keep the hardcoded response behind a `FAKE_AGENT=1` env flag. Sprint 3: if P2's functions aren't ready, keep the fake `SceneFunc` behind `FAKE_RENDER=1`. Both flags get deleted in Sprint 4.
+Sprint 1: nothing to wait for. Sprint 2: if P1's `/explain` isn't ready, leave `FAKE_AGENT=1` on. Sprint 3: if P2's functions aren't ready, leave `FAKE_RENDER=1` on. Both flags get deleted in Sprint 4. Sprint 4: if P4's `.app` is late, build the PKG against the SETUP §11.2 command run on your own machine — the script doesn't care who built the bundle.

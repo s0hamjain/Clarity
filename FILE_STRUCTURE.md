@@ -23,10 +23,11 @@ Clarity/
 ├── docker/                    # P2 · the manim-worker image
 ├── agent/                     # P1 · Python agent service
 ├── server/                    # P3 coordinator + P2 render package (one Go module)
-└── desktop/                   # P4 · macOS menu bar app + installer scripts
+├── release/                   # P3 · .pkg installer, LaunchAgent, release notes, publish script
+└── desktop/                   # P4 · macOS menu bar app, .app and .dmg build scripts
 ```
 
-Nothing under `samples/`, `docker/`, `agent/`, `server/`, or `desktop/` exists at the start. Each person creates their own directory in Sprint 1.
+Nothing under `samples/`, `docker/`, `agent/`, `server/`, `release/`, or `desktop/` exists at the start. Each person creates their own directory in Sprint 1.
 
 ---
 
@@ -189,9 +190,6 @@ desktop/
 │           │                       #   renders from local recent first when reopened
 │           └── result.css
 │
-├── stub/
-│   └── stub_server.py              # Fake coordinator on :8080; walks a job through every status on a timer
-│
 ├── assets/
 │   ├── icon.icns
 │   ├── menubar_idle.png
@@ -201,12 +199,25 @@ desktop/
 ├── scripts/
 │   ├── build_app.sh                # pyinstaller --windowed --hidden-import … --add-data ui → dist/Clarity.app;
 │   │                               #   patch Info.plist LSUIElement=true; codesign -s "Clarity Dev" --deep --force
-│   ├── build_dmg.sh                # create-dmg → dist/Clarity.dmg
-│   ├── build_pkg.sh                # pkgbuild + productbuild → dist/Clarity.pkg; postinstall writes LaunchAgent
-│   └── postinstall.sh              # ~/Library/LaunchAgents/com.clarity.app.plist
+│   └── build_dmg.sh                # create-dmg → dist/Clarity.dmg
 │
 └── dist/                           # Build output. Gitignored.
 ```
+
+---
+
+## release/ (P3)
+
+```
+release/
+├── build_pkg.sh                    # pkgbuild --component desktop/dist/Clarity.app … + productbuild → dist/Clarity.pkg
+├── publish.sh                      # gh release create v0.1.0 dist/Clarity.dmg dist/Clarity.pkg --notes-file RELEASE_NOTES.md
+├── RELEASE_NOTES.md                # install steps (Open Anyway, two permissions + restarts), known issues
+└── scripts/
+    └── postinstall                 # writes + loads ~/Library/LaunchAgents/com.clarity.app.plist (start at login)
+```
+
+P4 builds the `.app` and `.dmg`; P3 packages and publishes them. The hand-off is the built files in `desktop/dist/`.
 
 ---
 
@@ -214,7 +225,7 @@ desktop/
 
 | Rule | Detail |
 |---|---|
-| One path, one directory | `agent/` is P1, `docker/` + `samples/` + `server/internal/render/` are P2, the rest of `server/` is P3, `desktop/` is P4. Touching another path's directory requires telling them first. |
+| One path, one directory | `agent/` is P1, `docker/` + `samples/` + `server/internal/render/` are P2, the rest of `server/` + `release/` is P3, `desktop/` is P4. Touching another path's directory requires telling them first. |
 | `server/internal/render/` boundary | Three function signatures in FRD §14.1. P2 implements, P3 calls. Signature changes are agreed before either side edits. |
 | `samples/` docstring format | `title:` / `description:` / `category:` / `tags:` — the seed script depends on it. Documented in `samples/README.md`. |
 | Contract changes | `docs/FRD.md` only, own commit, straight to `main`, announced. |
@@ -229,6 +240,6 @@ desktop/
 |---|---|---|
 | A — Agent | P1 | `agent/**` |
 | B — Render | P2 | `docker/**`, `samples/**`, `server/internal/render/**` |
-| C — Coordinator | P3 | `server/cmd/**`, `server/internal/{api,store,cache,agent,jobs}/**`, `server/go.mod` |
+| C — Coordinator + Release | P3 | `server/cmd/**`, `server/internal/{api,store,cache,agent,jobs}/**`, `server/go.mod`, `release/**` |
 | D — Desktop | P4 | `desktop/**` |
 | Shared | All | `README.md`, `AGENTS.md`, `FILE_STRUCTURE.md`, `docs/**` |

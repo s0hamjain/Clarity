@@ -47,10 +47,10 @@ Four people, four roles, four directories, no overlap:
 |---|---|---|---|
 | AI | P1 | `agent/` | Make the models produce correct JSON: transcription (Gemini), explanation (Opus 5), code + repair (Sonnet 5). |
 | Render | P2 | `docker/`, `samples/`, `server/internal/render/` | Turn Manim code into an MP4 on S3, safely; write the verified example scenes. |
-| Backend | P3 | `server/` (rest) | Run the job: API, database, call P1 and P2 in order, report status. |
-| Desktop | P4 | `desktop/` | Everything the user sees and installs. |
+| Backend | P3 | `server/` (rest), `release/` | Run the job: API, database, call P1 and P2 in order, report status. Ship the release. |
+| Desktop | P4 | `desktop/` | Everything the user sees; the `.app` and `.dmg`. |
 
-Five time-boxed sprints. Everyone works on their own branch until the end of a sprint, then everyone's work is merged into `main` in a fixed order (P3 → P1 → P2 → P4) and we run a checklist together. Every role fakes the parts it depends on until the real thing lands, so nobody waits on anybody.
+Five time-boxed sprints, **15 hours budgeted per person** — the split is even by design, and an overflow backlog in `docs/WORK_SPLIT.md` absorbs anyone who finishes early. Everyone works on their own branch until the end of a sprint, then everyone's work is merged into `main` in a fixed order (P3 → P1 → P2 → P4) and we run a checklist together. Every role fakes the parts it depends on until the real thing lands, so nobody waits on anybody.
 
 ---
 
@@ -101,8 +101,8 @@ Full environment setup: prerequisites, clone and branch strategy, Anthropic and 
 |---|---|---|
 | P1 | [docs/P1_AI.md](docs/P1_AI.md) | The Python service that makes every model call (Gemini for OCR, Claude for explanation and code) |
 | P2 | [docs/P2_RENDER.md](docs/P2_RENDER.md) | Docker sandbox, Manim samples, video pipeline |
-| P3 | [docs/P3_BACKEND.md](docs/P3_BACKEND.md) | The Go coordinator: API, database, orchestration |
-| P4 | [docs/P4_DESKTOP.md](docs/P4_DESKTOP.md) | Menu-bar app, the two windows, the installer |
+| P3 | [docs/P3_BACKEND.md](docs/P3_BACKEND.md) | The Go coordinator: API, database, orchestration; the release |
+| P4 | [docs/P4_DESKTOP.md](docs/P4_DESKTOP.md) | Menu-bar app, the two windows, the `.app` and `.dmg` |
 
 Each file has: your job in plain words · what you own and never touch · the interfaces you implement or consume · setup · files to create · every sprint's steps with "done when" checklists · your merge steps · your rules · what to do if blocked.
 
@@ -179,11 +179,11 @@ Every task is specified in `docs/WORK_SPLIT.md`. This table is the index.
 
 | Sprint | Hours | Goal | P1 — Agent | P2 — Render | P3 — Coordinator | P4 — Desktop |
 |---|---|---|---|---|---|---|
-| **1 Foundation** | 0–3 | Every path runs on fakes; risky assumptions tested | Skeleton; Gemini + Claude + Voyage + Atlas clients; real `/vision` on Gemini; collision experiment | `manim-worker` image + container smoke test, 5 watched seed scenes, `precheck.go` | HTTP skeleton, Atlas job store with TTL indexes, fake status-walking worker, cache key + test | Permissions, `rumps` app, hotkey + `screencapture -i` + downscale, transparent-window spike, stub coordinator |
+| **1 Foundation** | 0–3 | Every path runs on fakes; risky assumptions tested | Skeleton; Gemini + Claude + Voyage + Atlas clients; real `/vision` on Gemini; collision experiment | `manim-worker` image + container smoke test, 5 watched seed scenes, `precheck.go` | HTTP skeleton, Atlas job store with TTL indexes, fake-mode worker (P4's stub), cache key + test | Permissions, `rumps` app, hotkey + `screencapture -i` + downscale, transparent-window spike |
 | **2 Vertical slice** | 3–7 | Real capture → real explanation in the real result box | `/explain`, seed script + `snippets_vector`, `/snippets/search`, `/snippets/ingest`, determinism decision | `Render()` against Docker with timeout + validation, semaphore, `render_test.go`, corpus to 20 | Agent client, real worker through `/explain` with immediate explanation write, cache hit path, fan-out skeleton | Spotlight box (translucent, frameless), result box with markdown + progress, real submit + notification, point at real coordinator |
 | **3 Real render** | 7–11 | One capture → real video, every codegen prompt grounded in retrieved snippets | `/codegen` with snippets, repair path, retrieval ablation | `RenderWithRepair`, `Concat` with mismatch guard, S3 upload | Real `SceneFunc`, concat → upload → cache → done, post-render ingest, real `/healthz` | Video playback, recents store + recents list in the spotlight box, reopen from local data, all failure states, guardrails toggle wired |
-| **4 Cache, guardrails, installer** | 11–15 | Survives real use; someone else can install it | Guardrails pass rate ≥ 8/10, promote/delete generated snippets, prompt tuning + `PromptVersion` | Cleanup on every exit path, timeout kills containers, `-qm` path, seeds for reported error classes | Two-machine cache test, failure injection, `503` on overload | Self-signed cert, `build_app.sh`, `build_dmg.sh`, install on a second Mac, permission persists across rebuild |
-| **5 Freeze + release** | 15–19 | Everything together; tagged release with installer | Freeze prompts, pre-warm cache | `-qm` release, clean-machine image build | All-green `/healthz` from fresh boot | `build_pkg.sh`, GitHub Release `v0.1.0` with DMG/PKG, install from the release URL |
+| **4 Cache, guardrails, installer** | 11–15 | Survives real use; someone else can install it | Guardrails pass rate ≥ 8/10, promote/delete generated snippets, prompt tuning + `PromptVersion` | Cleanup on every exit path, timeout kills containers, `-qm` path, seeds for reported error classes | Two-machine cache test, failure injection, `503` on overload, delete fake flags, `.pkg` + LaunchAgent | Self-signed cert, `build_app.sh`, `build_dmg.sh`, install on a second Mac, permission persists across rebuild |
+| **5 Freeze + release** | 15–19 | Everything together; tagged release with installer | Freeze prompts, pre-warm cache | `-qm` release, clean-machine image build | All-green `/healthz` from fresh boot, release notes, GitHub Release `v0.1.0` with DMG/PKG | Final `.app`/`.dmg` hand-off, install from the release URL |
 
 Full steps for each cell are in your per-person file (`docs/P1_AI.md` … `docs/P4_DESKTOP.md`). Sync-point checklists are in `docs/WORK_SPLIT.md`.
 

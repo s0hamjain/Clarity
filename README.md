@@ -42,8 +42,8 @@ Two ideas drive the whole design:
 
 | Part | What it is | Language | Who owns it |
 |---|---|---|---|
-| **Desktop app** | The menu-bar app: hotkey, screenshot, the floating input box, the result window, the installer | Python | P4 |
-| **Coordinator** | The server the desktop app talks to. Tracks each request ("job") through its steps, checks the cache, calls the other two parts in order | Go | P3 |
+| **Desktop app** | The menu-bar app: hotkey, screenshot, the floating input box, the result window, the `.app`/`.dmg` build | Python | P4 |
+| **Coordinator** | The server the desktop app talks to. Tracks each request ("job") through its steps, checks the cache, calls the other two parts in order. Also owns the release (`.pkg`, GitHub Release) | Go | P3 |
 | **Agent service** | The only part that talks to AI models. Reads the screenshot (Google Gemini), writes the explanation (Claude Opus 5), writes the Manim code and fixes it when it breaks (Claude Sonnet 5) | Python | P1 |
 | **Render pipeline** | Turns Manim code into an MP4 safely: runs it inside a locked-down Docker container, retries on failure, stitches scenes, uploads the video | Go + Docker | P2 |
 

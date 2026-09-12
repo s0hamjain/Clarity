@@ -550,8 +550,8 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | `Clarity.app` | `pyinstaller --windowed --name Clarity --icon assets/icon.icns desktop/clarity/main.py`, with `--hidden-import` for `rumps`, `pynput.keyboard._darwin`, `webview`. `LSUIElement` added to `Info.plist` post-build. `ui/` bundled via `--add-data`. | Must |
 | Stable identity | Sign with a **free self-signed certificate** (`codesign -s "Clarity Dev"`) so macOS keys the Screen Recording permission to a stable identity and it survives rebuilds. | Must |
 | `Clarity.dmg` | `create-dmg` with drag-to-Applications layout and background. | Must |
-| `Clarity.pkg` | `pkgbuild` + `productbuild`; post-install script writes `~/Library/LaunchAgents/com.clarity.app.plist` so it starts at login. | Should |
-| Release | Attached to a GitHub Release with install instructions including the "Open Anyway" step for unsigned apps on macOS 15. | Must |
+| `Clarity.pkg` | `pkgbuild` + `productbuild` in `release/build_pkg.sh`; post-install script writes `~/Library/LaunchAgents/com.clarity.app.plist` so it starts at login. Built by P3 from P4's `.app`. | Should |
+| Release | `release/publish.sh` attaches the `.dmg` and `.pkg` to a GitHub Release with `release/RELEASE_NOTES.md` (incl. the "Open Anyway" step for unsigned apps on macOS 15). P3. | Must |
 | Notarization | Deferred. Requires Apple Developer Program. Everything above works without it; the user does one "Open Anyway" per install. | Out (for now) |
 
 ---

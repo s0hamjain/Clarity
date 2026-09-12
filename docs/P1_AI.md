@@ -111,6 +111,8 @@ agent/
 
 ## Sprint 1 — Skeleton, clients, real `/vision`, collision experiment
 
+(Budget: ~3 h.)
+
 **Goal:** the service runs, `/healthz` proves all three external services are reachable, one real transcription works, and you know how often the same problem transcribes identically.
 
 ### Step 1 — Skeleton (45 min)
@@ -144,6 +146,8 @@ agent/
 ---
 
 ## Sprint 2 — `/explain`, the snippet library, `/snippets/search`, determinism decision
+
+(Budget: ~4.75 h.)
 
 **Goal:** a real explanation and storyboard come back; the library is seeded from P2's samples and searchable by meaning.
 
@@ -182,6 +186,8 @@ agent/
 
 ## Sprint 3 — `/codegen` with retrieved examples, repair, measure it
 
+(Budget: ~3.25 h.)
+
 **Goal:** real Manim code comes back for every scene, grounded in retrieved snippets; crashes get repaired; you can show retrieval helps.
 
 ### Step 1 — `/codegen` on Claude Sonnet 5 (1.5 h)
@@ -205,6 +211,8 @@ agent/
 
 ## Sprint 4 — Guardrails check, promote/delete generated snippets, tune prompts
 
+(Budget: ~3 h.)
+
 **Goal:** guardrails mode actually withholds answers; the library only contains examples worth imitating; recurring failures become prompt rules.
 
 ### Step 1 — Guardrails verification (1 h)
@@ -224,7 +232,7 @@ agent/
 
 ---
 
-## Sprint 5 — Freeze
+## Sprint 5 — Freeze (Budget: ~1 h)
 
 - Final `PromptVersion` bump. **No prompt changes after this.**
 - Pre-warm the cache: run 4–5 representative problems end to end with P3 so they're instant.
@@ -239,6 +247,7 @@ agent/
 3. **Before the sync point:** `git fetch origin && git rebase origin/main`, fix conflicts, run your own tests, push.
 4. **At the sync point:** the merge captain merges in order **P3 → P1 → P2 → P4**. You're second. Be ready to fix anything the checklist catches on your path.
 5. After the merge: back to step 1 for the next sprint.
+6. **Finished your sprint early?** Take the next item from the Overflow backlog in WORK_SPLIT.md — anyone can, regardless of role.
 
 Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 

@@ -341,14 +341,14 @@ Server URL defaults to `http://localhost:8080`. Change it via the menu bar **Ser
 ### 10.4 UI development without the backend
 
 ```sh
-python desktop/stub/stub_server.py   # fake coordinator on :8080, walks a job through every status on a timer
+cd server && FAKE_AGENT=1 FAKE_RENDER=1 go run ./cmd/server   # walks a job through every status on a timer; needs no Atlas, Docker, or keys
 ```
 
 ---
 
 ## 11. Building the Installer
 
-P4 owns these scripts; anyone can run them.
+P4 owns `build_app.sh` and `build_dmg.sh`; P3 owns `release/build_pkg.sh` and `release/publish.sh`. Anyone can run any of them.
 
 ### 11.1 Self-signed certificate — once per machine
 
@@ -371,10 +371,10 @@ open dist/Clarity.app                   # menu bar icon should appear
 ./scripts/build_dmg.sh               # create-dmg → dist/Clarity.dmg
 ```
 
-### 11.4 Build the `.pkg` (optional — adds start-at-login)
+### 11.4 Build the `.pkg` (adds start-at-login)
 
 ```sh
-./scripts/build_pkg.sh               # pkgbuild + productbuild → dist/Clarity.pkg; post-install writes the LaunchAgent
+cd ../release && ./build_pkg.sh      # pkgbuild + productbuild → ../desktop/dist/Clarity.pkg; postinstall writes the LaunchAgent
 ```
 
 ### 11.5 Install like a user would
@@ -384,7 +384,7 @@ Mount the DMG, drag to Applications, open. On macOS 15 the unsigned app is block
 ### 11.6 Release
 
 ```sh
-gh release create v0.1.0 desktop/dist/Clarity.dmg desktop/dist/Clarity.pkg --title "Clarity 0.1.0" --notes-file desktop/RELEASE_NOTES.md
+./release/publish.sh                 # gh release create v0.1.0 desktop/dist/Clarity.dmg desktop/dist/Clarity.pkg --notes-file release/RELEASE_NOTES.md
 ```
 
 ---

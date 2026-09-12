@@ -2,7 +2,7 @@
 
 **You are P4. Your job in one sentence:** build everything the user sees and installs — the menu-bar app, the hotkey, the region screenshot, the translucent input box, the floating result window, and the `.dmg` that puts it on someone else's Mac.
 
-You never touch a server. You talk to one thing: P3's HTTP API on `localhost:8080`. Until that exists, you talk to a stub you write in 40 lines.
+You never touch a server. You talk to one thing: P3's HTTP API on `localhost:8080`. From hour one P3's coordinator fakes the whole pipeline (`FAKE_AGENT=1 FAKE_RENDER=1` walks a job through every status on a timer), so you build the UI against the real API shape from the start. Packaging the `.pkg` and publishing the GitHub Release is P3's — you hand them a working `Clarity.app` and `Clarity.dmg`.
 
 ---
 
@@ -16,7 +16,7 @@ The user's experience, in order — this is what you're building:
 4. A translucent **result box appears**. It shows "Reading the problem…", then the written explanation the moment it exists (seconds), then the video (about a minute). The user can **drag it anywhere** so it doesn't cover the problem.
 5. **X** (or Esc) closes it. Closing early cancels the job.
 
-Plus: **recents** — the last 50 screenshots live on the user's Mac, and the spotlight box can list them so the user can re-ask about an old one. And the **installer** — a `.dmg` anyone can download.
+Plus: **recents** — the last 50 screenshots live on the user's Mac, and the spotlight box can list them so the user can re-ask about an old one. And the **app bundle** — `Clarity.app` and `Clarity.dmg` that P3 packages into a `.pkg` and publishes.
 
 ---
 
@@ -24,9 +24,9 @@ Plus: **recents** — the last 50 screenshots live on the user's Mac, and the sp
 
 | You own | You never touch |
 |---|---|
-| `desktop/**` — the whole directory | `server/` (P2, P3) |
+| `desktop/**` — the whole directory | `server/` (P2, P3) and `release/` (P3 — PKG, LaunchAgent, GitHub Release) |
 | The two windows' HTML/CSS/JS | `agent/` (P1) |
-| The build scripts and release | Anything about how a job is *processed* — you only display what the API returns |
+| `build_app.sh`, `build_dmg.sh`, the self-signed cert | Anything about how a job is *processed* — you only display what the API returns |
 
 ---
 
@@ -43,7 +43,7 @@ One boundary. You **call** P3's public API; the exact requests and responses are
 
 **The two rules you must honor** (API.md §5): render `explanation` the moment it is non-null, whatever `status` says; treat `done` with `video_url: null` as a quiet note ("The animation didn't render this time"), not an error.
 
-**Nobody is waiting on you.** Build against your stub until Sprint 2.
+**Nobody is waiting on you.** P3's coordinator in fake mode is your server from Sprint 1; the real pipeline lands behind the same URL in Sprints 2–3 without you changing anything.
 
 ---
 
@@ -77,16 +77,15 @@ desktop/
 │       ├── shared/base.css
 │       ├── spotlight/{index.html, spotlight.js, spotlight.css}
 │       └── result/{index.html, result.js, result.css}
-├── stub/stub_server.py           # fake coordinator on :8080
 ├── assets/{icon.icns, menubar_idle.png, menubar_working.png, dmg_background.png}
-└── scripts/{build_app.sh, build_dmg.sh, build_pkg.sh, postinstall.sh}
+└── scripts/{build_app.sh, build_dmg.sh}   # .pkg + LaunchAgent + GitHub Release live in release/ (P3)
 ```
 
 ---
 
-## Sprint 1 — Permissions, menu bar app, hotkey + capture, the transparency spike, the stub
+## Sprint 1 — Permissions, menu bar app, hotkey + capture, the transparency spike
 
-**Goal:** the app lives in the menu bar; `⌘⇧E` produces a region screenshot on disk; you've proven the translucent-window trick works on your Mac; you have a fake server to build the UI against.
+**Goal:** the app lives in the menu bar; `⌘⇧E` produces a region screenshot on disk; you've proven the translucent-window trick works on your Mac. (Budget: ~2.5 h.)
 
 ### Step 1 — Permissions first (30 min)
 SETUP §10.2, exactly. Write down what you saw — the prompts, the restarts — in `desktop/README.md`. That paragraph ships to users.
@@ -109,20 +108,19 @@ webview.start()
 ```
 Is it translucent and blurred over your desktop? **Yes** → the design works as specified. **No** → note it in your PR; Sprint 2 uses a solid dark box at 92 % opacity instead. Either way, answer FRD §24's question.
 
-### Step 5 — Stub server (30 min)
-`stub/stub_server.py`: `http.server`, ~40 lines. `POST /api/jobs` → `{"job_id": "j_stub"}`. `GET /api/jobs/j_stub` → walks through every status from API.md §5 on a timer (1 s each), with a sample markdown explanation from `generating` on, `scenes_total: 3` and `scenes_done` incrementing during `rendering`, and a `video_url` pointing at any MP4 on disk at `done`. `DELETE` → `{"status": "cancelled"}`. This is your server until Sprint 2.
+### Step 5 — Point at P3's coordinator (10 min)
+P3's server in fake mode (`FAKE_AGENT=1 FAKE_RENDER=1`) is up by the end of Sprint 1 and walks any job through every status on a timer with a sample explanation and a sample MP4 — exactly the shapes in API.md §2. `config.server_url = http://localhost:8080`. If P3 isn't up yet when you need it, a 10-line `http.server` that returns one fixed `done` job is fine — don't polish it, delete it when P3 is up.
 
 ### Done when
 - [ ] `python -m clarity` → menu bar icon; all menu items present; Quit works.
 - [ ] `⌘⇧E` → crosshair → drag → a PNG under 8 MB on disk. Esc → nothing happens, no error.
 - [ ] Spike result recorded (translucent: yes/no).
-- [ ] `python stub/stub_server.py` + `curl` walks a job through every status.
 
 ---
 
 ## Sprint 2 — Spotlight box, result box, real submit
 
-**Goal:** the full visual flow works against the stub, then against P3's real server: capture → box animates in → type → Enter → result box shows a real explanation.
+**Goal:** the full visual flow works against P3's coordinator — first in fake mode, then real: capture → box animates in → type → Enter → result box shows a real explanation. (Budget: ~5 h.)
 
 ### Step 1 — Spotlight box (2 h)
 `spotlight_window.py` + `ui/spotlight/`:
@@ -142,8 +140,8 @@ Is it translucent and blurred over your desktop? **Yes** → the design works as
 ### Step 3 — Submit + notification (45 min)
 `client.py`: `POST /api/jobs` with `{image, user_prompt, guardrails: config.guardrails, source: "desktop"}`. `requests.ConnectionError` → `rumps.notification("Clarity", "Can't reach the server", server_url)` and **leave the spotlight box open** so the user can retry. `rumps.notification` when the explanation first appears, so the user doesn't have to stare at the box.
 
-### Step 4 — Point at the real server (15 min)
-Stop the stub. `config.server_url = http://localhost:8080` (P3's). A real capture → a real explanation in the result box.
+### Step 4 — Real pipeline (15 min)
+P3 turns off `FAKE_AGENT`. Same URL, nothing changes on your side. A real capture → a real explanation in the result box.
 
 ### Done when
 - [ ] `⌘⇧E` → drag → spotlight box animates in, translucent (or the fallback) → type → Enter → animates out → result box appears.
@@ -155,7 +153,7 @@ Stop the stub. `config.server_url = http://localhost:8080` (P3's). A real captur
 
 ## Sprint 3 — Video, recents, every failure state, guardrails, cancel
 
-**Goal:** the video plays; old screenshots come back; nothing the server does can make the UI look broken.
+**Goal:** the video plays; old screenshots come back; nothing the server does can make the UI look broken. (Budget: ~4.5 h.)
 
 ### Step 1 — Video (30 min)
 `<video>` appears when `video_url` is set — no reload, `autoplay muted controls`. Progress text during `rendering` uses `scenes_done`/`scenes_total`.
@@ -188,9 +186,9 @@ The **Guardrails** checkbox writes `config.json`; every `POST` sends the current
 
 ---
 
-## Sprint 4 — The installer
+## Sprint 4 — The app bundle and DMG
 
-**Goal:** someone who has never run this from source installs it from a `.dmg` and it works.
+**Goal:** `Clarity.app` builds reproducibly, is signed with a stable identity, and installs from a `.dmg` on a Mac that never ran from source. P3 takes it from there (PKG, release). (Budget: ~2.5 h.)
 
 ### Step 1 — Self-signed certificate (10 min)
 Keychain Access → Certificate Assistant → Create a Certificate → name `Clarity Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**. This gives the app a *stable* identity so macOS remembers the Screen Recording permission across rebuilds. Unsigned builds change identity every time and the permission resets.
@@ -209,8 +207,8 @@ codesign --force --deep --sign "Clarity Dev" dist/Clarity.app
 ### Step 3 — `build_dmg.sh` (30 min)
 `create-dmg --volname Clarity --background assets/dmg_background.png --window-size 600 400 --icon Clarity.app 150 200 --app-drop-link 450 200 dist/Clarity.dmg dist/Clarity.app`.
 
-### Step 4 — Install on a second Mac (1 h)
-A teammate who hasn't run from source. Mount, drag, open → macOS 15 blocks it → **System Settings → Privacy & Security → Open Anyway** → grant Screen Recording → relaunch → `⌘⇧E` → grant Input Monitoring → relaunch → `⌘⇧E` → works. Write `RELEASE_NOTES.md` from whatever they hit.
+### Step 4 — Install on a second Mac (45 min)
+A teammate who hasn't run from source (P3 is the natural choice — they need your `.app` for the PKG anyway). Mount, drag, open → macOS 15 blocks it → **System Settings → Privacy & Security → Open Anyway** → grant Screen Recording → relaunch → `⌘⇧E` → grant Input Monitoring → relaunch → `⌘⇧E` → works. Tell P3 what they hit — it goes into `release/RELEASE_NOTES.md`, which P3 owns.
 
 ### Step 5 — Rebuild, reinstall, confirm (15 min)
 Rebuild the `.app`, replace it in Applications, launch. It must **not** ask for Screen Recording again. If it does, the `codesign` step isn't running.
@@ -218,15 +216,16 @@ Rebuild the `.app`, replace it in Applications, launch. It must **not** ask for 
 ### Done when
 - [ ] `Clarity.dmg` installs and works on a Mac that never ran from source.
 - [ ] Permission survives a rebuild.
+- [ ] `dist/Clarity.app` handed to P3 for the PKG.
 - [ ] Spotlight box translucent inside the bundle (or fallback in place).
 
 ---
 
-## Sprint 5 — Release
+## Sprint 5 — Hand-off and verify (Budget: ~0.5 h)
 
-- `build_pkg.sh` (if time): `pkgbuild` + `productbuild`; `postinstall.sh` writes `~/Library/LaunchAgents/com.clarity.app.plist` so it starts at login.
-- `gh release create v0.1.0 dist/Clarity.dmg [dist/Clarity.pkg] --notes-file RELEASE_NOTES.md`.
-- Install **from the release URL**, not from `dist/`. It works → done.
+- Final `build_app.sh` + `build_dmg.sh` from a clean `main`. Hand `dist/Clarity.app` and `dist/Clarity.dmg` to P3.
+- After P3 publishes: install **from the release URL**, not from `dist/`, on a second Mac. `⌘⇧E` works → done.
+- If you finish early, pull from the **Overflow backlog** in WORK_SPLIT.md.
 
 ---
 
@@ -236,6 +235,7 @@ Rebuild the `.app`, replace it in Applications, launch. It must **not** ask for 
 2. Commit small. Push whenever.
 3. **Before the sync point:** `git fetch origin && git rebase origin/main`, fix conflicts, run `python -m clarity --once` end to end, push.
 4. **At the sync point:** merge order is **P3 → P1 → P2 → P4**. You're last — you consume everything. You're the merge captain in Sprint 4.
+6. **Finished your sprint early?** Take the next item from the Overflow backlog in WORK_SPLIT.md — anyone can, regardless of role.
 5. After the merge: back to step 1.
 
 Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
@@ -263,4 +263,4 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 
 ## If you're blocked
 
-You shouldn't be. Sprint 1 is all local. Sprint 2 onward: if P3's server is down, switch `server_url` back to the stub and keep building UI.
+You shouldn't be. Sprint 1 is all local. Sprint 2 onward: if P3's server is down, ask them to start it in fake mode (`FAKE_AGENT=1 FAKE_RENDER=1`) — it needs no Atlas, no Docker, no keys.
