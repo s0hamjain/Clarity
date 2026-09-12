@@ -36,6 +36,13 @@ func (p *stubPipeline) Cancel(ctx context.Context, id string) error {
 }
 
 func newTestServer(t *testing.T) (http.Handler, jobs.Store, jobs.CacheStore, *stubPipeline) {
+	srv, jobStore, cacheStore, pipe := newTestServerFull(t)
+	return srv.Routes(), jobStore, cacheStore, pipe
+}
+
+// newTestServerFull also hands back the *Server, for tests that need to reach
+// past the router — the render function and the semaphore wait.
+func newTestServerFull(t *testing.T) (*Server, jobs.Store, jobs.CacheStore, *stubPipeline) {
 	t.Helper()
 	t.Setenv("FAKE_AGENT", "1")
 	t.Setenv("FAKE_RENDER", "1")
@@ -47,8 +54,8 @@ func newTestServer(t *testing.T) (http.Handler, jobs.Store, jobs.CacheStore, *st
 	}
 	jobStore, cacheStore := store.NewMemoryJobs(), store.NewMemoryCache()
 	pipe := &stubPipeline{}
-	srv := NewServer(cfg, jobStore, cacheStore, pipe, NewHealth(cfg, nil))
-	return srv.Routes(), jobStore, cacheStore, pipe
+	srv := NewServer(cfg, jobStore, cacheStore, pipe, NewHealth(cfg, nil), FakeRender)
+	return srv, jobStore, cacheStore, pipe
 }
 
 func pngDataURL(nBytes int) string {

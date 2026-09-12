@@ -3,10 +3,13 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/s0hamjain/Clarity/server/internal/agent"
 	"github.com/s0hamjain/Clarity/server/internal/config"
 )
 
@@ -61,17 +64,27 @@ func (s *recordingStore) Update(_ context.Context, id string, f Fields) error {
 		case "status":
 			j.Status = v.(Status)
 		case "problem_hash":
-			j.ProblemHash = Str(v.(string))
+			j.ProblemHash = strPtr(v)
+		case "problem_text":
+			j.ProblemText = strPtr(v)
+		case "category":
+			j.Category = strPtr(v)
 		case "explanation":
-			j.Explanation = Str(v.(string))
+			j.Explanation = strPtr(v)
 		case "video_url":
-			j.VideoURL = Str(v.(string))
+			j.VideoURL = strPtr(v)
 		case "error":
-			j.Error = Str(v.(string))
+			j.Error = strPtr(v)
 		case "scenes_total":
 			j.ScenesTotal = v.(int)
 		case "scenes_done":
 			j.ScenesDone = v.(int)
+		case "cached":
+			j.Cached = v.(bool)
+		default:
+			// Fail loudly rather than silently dropping a field the pipeline
+			// writes — a test double that ignores writes proves nothing.
+			panic("recordingStore: unhandled job field " + k)
 		}
 	}
 	s.history = append(s.history, rec)
@@ -129,7 +142,7 @@ func newTestWorker(t *testing.T) (*Worker, *recordingStore, *recordingCache) {
 		t.Fatalf("config.Load: %v", err)
 	}
 	js, cs := newRecordingStore(), newRecordingCache()
-	w := NewWorker(cfg, js, cs)
+	w := NewWorker(cfg, js, cs, agent.New("http://127.0.0.1:1"), stubSceneFunc)
 	// Keep the fake pipeline fast; one second per status is for humans.
 	w.stepInterval = 2 * time.Millisecond
 	return w, js, cs
@@ -306,4 +319,23 @@ func TestCacheKeyGroupsIdenticalJobs(t *testing.T) {
 	if *a.ProblemHash == *c.ProblemHash {
 		t.Error("guardrails did not change the cache key")
 	}
+}
+
+// stubSceneFunc renders instantly and always succeeds, so the pipeline tests
+// measure the pipeline rather than the renderer.
+func stubSceneFunc(ctx context.Context, scene agent.Scene, workDir string) (string, bool) {
+	if ctx.Err() != nil {
+		return "", false
+	}
+	return filepath.Join(workDir, fmt.Sprintf("scene%d.mp4", scene.Index)), true
+}
+
+// strPtr mirrors how the real stores handle a nullable string field: a nil
+// value clears it, which is how video_url is unset when no scene survived.
+func strPtr(v any) *string {
+	if v == nil {
+		return nil
+	}
+	s := v.(string)
+	return &s
 }

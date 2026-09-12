@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Rule 20: nothing here comes from the network. Scripts, styles and
+         images are local only, and this window never connects anywhere.
+         'unsafe-eval' is pywebview's bridge: window.evaluate_js() runs a
+         string, so the host cannot talk to the page without it. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; style-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; connect-src 'none'" />
+    <title>Clarity</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="spotlight.css" />
+  </head>
+  <body>
+    <div class="panel" id="panel">
+      <div class="row">
+        <img id="thumb" class="thumb" alt="" hidden />
+        <div class="field">
+          <input
+            id="input"
+            type="text"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            maxlength="2000"
+          />
+          <div id="message" class="message" hidden></div>
+        </div>
+        <div id="hint" class="hint"><kbd>↵</kbd></div>
+      </div>
+    </div>
+    <script src="spotlight.js"></script>
+  </body>
+</html>

@@ -2,32 +2,39 @@ package jobs
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/s0hamjain/Clarity/server/internal/agent"
 	"github.com/s0hamjain/Clarity/server/internal/cache"
 	"github.com/s0hamjain/Clarity/server/internal/config"
 )
 
-// Worker drives one job from a screenshot to a video.
+// Worker drives one job from a screenshot to a video: transcribe, fingerprint,
+// check the cache, explain, fan the scenes out, stitch, upload, done.
 //
-// Sprint 1 is the fake pipeline: with FAKE_AGENT=1 and FAKE_RENDER=1 it walks
-// any job through every status on a one-second timer with hardcoded data, using
-// no Atlas, no Docker and no API keys. That is the server P4 builds the desktop
-// UI against in Sprints 1–2. Sprint 2 replaces the fake /vision and /explain
-// steps with real agent calls; Sprint 3 replaces the fake render.
+// Fake mode is not a separate pipeline. FAKE_AGENT swaps only the two model
+// calls for canned answers and FAKE_RENDER swaps only the render, so the server
+// P4 develops against walks exactly the code path a real job walks. Both flags
+// default on and are deleted in Sprint 4.
 type Worker struct {
 	cfg   *config.Config
 	jobs  Store
 	cache CacheStore
+	agent *agent.Client
+
+	// renderScene turns one scene into one clip. Fake in Sprint 2; Sprint 3
+	// makes it one POST /scenes/render call per scene.
+	renderScene SceneFunc
 
 	mu      sync.Mutex
 	running map[string]*jobCtl
 
-	// stepInterval is how long the fake pipeline holds each status. One
-	// second matches the desktop app's poll interval, so P4 sees every
-	// status exactly once. Tests shorten it.
+	// stepInterval is how long fake mode holds each status. One second matches
+	// the desktop app's poll interval, so P4 sees every status exactly once.
+	// Tests shorten it.
 	stepInterval time.Duration
 }
 
@@ -41,8 +48,16 @@ type jobCtl struct {
 	mu     sync.Mutex
 }
 
-func NewWorker(cfg *config.Config, j Store, c CacheStore) *Worker {
-	return &Worker{cfg: cfg, jobs: j, cache: c, running: make(map[string]*jobCtl), stepInterval: time.Second}
+func NewWorker(cfg *config.Config, j Store, c CacheStore, a *agent.Client, renderScene SceneFunc) *Worker {
+	return &Worker{
+		cfg:          cfg,
+		jobs:         j,
+		cache:        c,
+		agent:        a,
+		renderScene:  renderScene,
+		running:      make(map[string]*jobCtl),
+		stepInterval: time.Second,
+	}
 }
 
 // Start runs the pipeline for one job in its own goroutine and returns at once.
@@ -56,12 +71,13 @@ func (w *Worker) Start(j *Job, imageB64, mediaType string) {
 
 	go func() {
 		defer w.forget(j.ID)
+		defer cleanupWorkDir(j.ID)
 		// Rule 7: a panic anywhere in the pipeline ends the job as failed
 		// rather than taking the process down or leaving the job stuck.
 		defer func() {
 			if p := recover(); p != nil {
 				slog.Error("pipeline panicked", "job_id", j.ID, "panic", p)
-				w.fail(j.ID, "internal")
+				w.fail(j.ID, ErrInternal)
 			}
 		}()
 		w.run(ctx, j, imageB64, mediaType)
@@ -103,125 +119,229 @@ func (w *Worker) forget(id string) {
 	w.mu.Unlock()
 }
 
-// update writes to a job under its control lock, refusing once the job's
-// context is cancelled. Every write the pipeline makes goes through here.
-func (w *Worker) update(ctx context.Context, id string, fields Fields) error {
-	if ctl := w.ctl(id); ctl != nil {
-		ctl.mu.Lock()
-		defer ctl.mu.Unlock()
-	}
-	if err := ctx.Err(); err != nil {
-		return err // cancelled while we waited for the lock
-	}
-	return w.jobs.Update(ctx, id, fields)
-}
+// Job-level failure codes (API.md §4).
+const (
+	ErrNoProblemFound  = "no_problem_found"
+	ErrExplainFailed   = "explain_failed"
+	ErrInternal        = "internal"
+	ErrAllScenesFailed = "all_scenes_failed"
+)
 
-// run is the fake pipeline. Every step checks for cancellation first, so a
-// DELETE lands within a second.
+// run is the pipeline for one job.
 func (w *Worker) run(ctx context.Context, j *Job, imageB64, mediaType string) {
 	log := slog.With("job_id", j.ID)
 	log.Info("pipeline started",
 		"fake_agent", w.cfg.FakeAgent,
 		"fake_render", w.cfg.FakeRender,
-		"image_bytes_b64", len(imageB64),
-		"media_type", mediaType,
+		"guardrails", j.Guardrails,
 		"quality", w.cfg.ManimQuality,
 	)
 
-	// transcribing — stands in for POST /vision (Sprint 2).
-	if !w.step(ctx, j.ID, StatusTranscribing, nil) {
+	// --- transcribing: read the problem off the screenshot ---
+	if !w.setStatus(ctx, j.ID, StatusTranscribing) {
+		return
+	}
+	vision, err := w.transcribe(ctx, imageB64, mediaType, j.Guardrails)
+	if err != nil {
+		if ctx.Err() != nil {
+			return // cancelled; Cancel owns the status
+		}
+		log.Error("vision failed", "error", err)
+		w.fail(j.ID, ErrInternal)
 		return
 	}
 
-	problemText := fakeProblemText
-	category := "algorithm"
-	hash := cache.Hash(problemText, j.UserPrompt, j.Guardrails)
+	// An unreadable capture is a finished job, not a broken one.
+	if vision.Category == agent.CategoryUnknown {
+		log.Info("no problem found in the capture", "confidence", vision.Confidence)
+		w.fail(j.ID, ErrNoProblemFound)
+		return
+	}
 
-	// explaining — problem_hash, problem_text and category are set by now
-	// (API.md §5). The real cache lookup goes in right here in Sprint 2.
-	if !w.step(ctx, j.ID, StatusExplaining, Fields{
+	// --- fingerprint, and short-circuit on a cache hit ---
+	hash := cache.Hash(vision.ProblemText, j.UserPrompt, j.Guardrails)
+	if !w.update(ctx, j.ID, Fields{
 		"problem_hash": hash,
-		"problem_text": problemText,
-		"category":     category,
+		"problem_text": vision.ProblemText,
+		"category":     vision.Category,
 	}) {
 		return
 	}
 
-	// generating — the explanation is written the instant it exists
-	// (FRD §23 rule 8). This is the moment the user stops waiting.
-	if !w.step(ctx, j.ID, StatusGenerating, Fields{
-		"explanation":  fakeExplanation,
-		"scenes_total": fakeScenesTotal,
+	if entry, err := w.cache.Get(ctx, hash); err == nil {
+		// Rule 11: the cache-hit path never calls /explain. Both fields are
+		// returned, so there is something to read while the video loads.
+		log.Info("cache hit", "problem_hash", hash)
+		w.update(ctx, j.ID, Fields{
+			"status":      StatusDone,
+			"cached":      true,
+			"explanation": entry.Explanation,
+			"video_url":   entry.VideoURL,
+		})
+		return
+	} else if !errors.Is(err, ErrNotFound) {
+		// A cache lookup that fails for any other reason is a miss, not a
+		// failure — the job can still be done the slow way.
+		log.Warn("cache lookup failed; treating as a miss", "error", err)
+	}
+
+	// --- explaining: the explanation and the storyboard ---
+	if !w.setStatus(ctx, j.ID, StatusExplaining) {
+		return
+	}
+	explained, err := w.explain(ctx, agent.ExplainRequest{
+		ProblemText: vision.ProblemText,
+		Category:    vision.Category,
+		UserPrompt:  j.UserPrompt,
+		Guardrails:  j.Guardrails,
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Error("explain failed", "error", err)
+		w.fail(j.ID, ErrExplainFailed)
+		return
+	}
+
+	// Rule 8, and the most important write in the server: the explanation goes
+	// in before any scene work starts. Every moment between /explain returning
+	// and this line is a moment the user waits for nothing.
+	scenes := explained.Storyboard.Scenes
+	if !w.update(ctx, j.ID, Fields{
+		"status":       StatusGenerating,
+		"explanation":  explained.Explanation,
+		"scenes_total": len(scenes),
 	}) {
 		return
 	}
-	log.Info("explanation written", "problem_hash", hash, "scenes_total", fakeScenesTotal)
+	log.Info("explanation written",
+		"problem_hash", hash, "scenes_total", len(scenes), "revisions", explained.Revisions)
 
-	// rendering — one scene finishes per second.
-	if !w.step(ctx, j.ID, StatusRendering, nil) {
+	// --- rendering: every scene at once ---
+	if !w.setStatus(ctx, j.ID, StatusRendering) {
 		return
 	}
-	for done := 1; done <= fakeScenesTotal; done++ {
-		if !w.sleep(ctx) {
+	clips := w.fanOut(ctx, j.ID, scenes, w.renderScene, func(done int) {
+		w.update(ctx, j.ID, Fields{"scenes_done": done})
+	})
+	if ctx.Err() != nil {
+		return
+	}
+	log.Info("scenes finished", "surviving", len(clips), "total", len(scenes))
+
+	// --- concatenating, uploading ---
+	if !w.setStatus(ctx, j.ID, StatusConcatenating) {
+		return
+	}
+	if len(clips) == 0 {
+		// The explanation survives; the animation quietly did not. Not a
+		// failure, and nothing is cached.
+		log.Warn("every scene was dropped; finishing without a video")
+		w.update(ctx, j.ID, Fields{"status": StatusDone, "video_url": nil, "error": ErrAllScenesFailed})
+		return
+	}
+
+	// Concat does the upload too, so it runs under `concatenating`; `uploading`
+	// is set afterwards, and exists for the UI.
+	videoURL, err := w.concatAndUpload(ctx, clips, hash)
+	if err != nil {
+		if ctx.Err() != nil {
 			return
 		}
-		if err := w.update(ctx, j.ID, Fields{"scenes_done": done}); err != nil {
-			log.Error("update scenes_done", "error", err)
-			w.fail(j.ID, "internal")
-			return
-		}
-	}
-
-	if !w.step(ctx, j.ID, StatusConcatenating, nil) {
+		log.Error("concat or upload failed", "error", err)
+		w.update(ctx, j.ID, Fields{"status": StatusDone, "video_url": nil, "error": ErrInternal})
 		return
 	}
-	if !w.step(ctx, j.ID, StatusUploading, nil) {
+	if !w.setStatus(ctx, j.ID, StatusUploading) {
 		return
 	}
-	// Hold `uploading` for a poll interval like every other status, so P4 can
-	// see it. Without this the upload and the done write land in the same
-	// millisecond and the status is never observable.
-	if !w.sleep(ctx) {
+	// Only the cache write separates `uploading` from `done`, so in fake mode
+	// hold it for a poll interval — otherwise P4 has a status they can never
+	// see on screen. In a real run it is genuinely near-instantaneous, because
+	// Concat has already done the uploading; see the note in P3_BACKEND
+	// Sprint 3 Step 2 ("status is for the UI").
+	if w.cfg.FakeAgent && !w.sleep(ctx) {
 		return
 	}
 
-	// The cache is written only now, after the (fake) upload succeeded
-	// (FRD §23 rule 10), and carries both fields so a hit has something to read
-	// while the video loads.
-	if err := w.cache.Put(ctx, hash, w.cfg.FakeVideoURL, fakeExplanation); err != nil {
+	// Rule 10: the cache is written only now, after the upload succeeded, and
+	// never on any path above.
+	if err := w.cache.Put(ctx, hash, videoURL, explained.Explanation); err != nil {
 		log.Error("cache put", "error", err) // not fatal; the job still completes
 	}
 
-	if err := w.update(ctx, j.ID, Fields{
-		"status":    StatusDone,
-		"video_url": w.cfg.FakeVideoURL,
-	}); err != nil {
-		log.Error("mark done", "error", err)
+	if !w.update(ctx, j.ID, Fields{"status": StatusDone, "video_url": videoURL}) {
 		return
 	}
-	log.Info("pipeline finished", "status", StatusDone, "problem_hash", hash)
+	log.Info("pipeline finished", "status", StatusDone, "problem_hash", hash, "video_url", videoURL)
 }
 
-// step sleeps one second, then moves the job to status with any extra fields.
-// It returns false when the job was cancelled or could not be written, in which
-// case the caller must stop.
-func (w *Worker) step(ctx context.Context, id string, status Status, fields Fields) bool {
-	if !w.sleep(ctx) {
+// --- the three swappable steps -------------------------------------------
+
+func (w *Worker) transcribe(ctx context.Context, imageB64, mediaType string, guardrails bool) (*agent.VisionResponse, error) {
+	if w.cfg.FakeAgent {
+		if !w.sleep(ctx) {
+			return nil, ctx.Err()
+		}
+		return fakeVision(), nil
+	}
+	return w.agent.Vision(ctx, imageB64, mediaType, guardrails)
+}
+
+func (w *Worker) explain(ctx context.Context, req agent.ExplainRequest) (*agent.ExplainResponse, error) {
+	if w.cfg.FakeAgent {
+		if !w.sleep(ctx) {
+			return nil, ctx.Err()
+		}
+		return fakeExplain(), nil
+	}
+	return w.agent.Explain(ctx, req)
+}
+
+// concatAndUpload stitches the clips and returns the public video URL.
+// Real ffmpeg concat and S3 upload are P2's render.Concat, wired in Sprint 3.
+func (w *Worker) concatAndUpload(ctx context.Context, clips []string, hash string) (string, error) {
+	if w.cfg.FakeRender {
+		if !w.sleep(ctx) {
+			return "", ctx.Err()
+		}
+		return w.cfg.FakeVideoURL, nil
+	}
+	return "", errors.New("render.Concat is not wired yet (P2, Sprint 3)")
+}
+
+// --- job record helpers ---------------------------------------------------
+
+// setStatus advances the job, pausing first in fake mode so each status stays
+// visible for a poll interval.
+func (w *Worker) setStatus(ctx context.Context, id string, status Status) bool {
+	if w.cfg.FakeAgent && !w.sleep(ctx) {
 		return false
 	}
-	if fields == nil {
-		fields = Fields{}
+	return w.update(ctx, id, Fields{"status": status})
+}
+
+// update writes to a job under its control lock, refusing once the job's
+// context is cancelled. Every write the pipeline makes goes through here.
+// Returns false when the caller must stop.
+func (w *Worker) update(ctx context.Context, id string, fields Fields) bool {
+	if ctl := w.ctl(id); ctl != nil {
+		ctl.mu.Lock()
+		defer ctl.mu.Unlock()
 	}
-	fields["status"] = status
-	if err := w.update(ctx, id, fields); err != nil {
-		slog.Error("advance status", "job_id", id, "status", status, "error", err)
-		w.fail(id, "internal")
+	if ctx.Err() != nil {
+		return false // cancelled while we waited for the lock
+	}
+	if err := w.jobs.Update(ctx, id, fields); err != nil {
+		slog.Error("update job", "job_id", id, "fields", len(fields), "error", err)
+		w.failLocked(id, ErrInternal)
 		return false
 	}
 	return true
 }
 
-// sleep waits one second unless the job is cancelled first.
+// sleep waits one step unless the job is cancelled first.
 func (w *Worker) sleep(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
@@ -231,15 +351,19 @@ func (w *Worker) sleep(ctx context.Context) bool {
 	}
 }
 
-// fail ends a job with an error code from API.md §4. It uses a fresh context,
-// because the job's own context is usually the reason we got here, but it still
-// takes the control lock and refuses to overwrite a terminal status — a job the
-// user cancelled stays `cancelled`.
+// fail ends a job with a code from API.md §4. It uses a fresh context, because
+// the job's own context is often the reason we got here, and refuses to
+// overwrite a terminal status — a job the user cancelled stays `cancelled`.
 func (w *Worker) fail(id, code string) {
 	if ctl := w.ctl(id); ctl != nil {
 		ctl.mu.Lock()
 		defer ctl.mu.Unlock()
 	}
+	w.failLocked(id, code)
+}
+
+// failLocked is fail for callers that already hold the job's control lock.
+func (w *Worker) failLocked(id, code string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

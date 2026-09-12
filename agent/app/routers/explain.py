@@ -1,4 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from app.graphs.explainer.graph import explainer_graph
+from app.graphs.explainer.state import ExplainerState
 from app.schemas import ExplainRequest, ExplainResponse, Storyboard, Scene
 
 router = APIRouter()
@@ -6,25 +8,51 @@ router = APIRouter()
 
 @router.post("/explain", response_model=ExplainResponse)
 async def explain_problem(req: ExplainRequest):
-    """POST /explain - Explainer agent endpoint (Stubbed for Sprint 1)."""
-    return ExplainResponse(
-        explanation=f"**Explanation for:** {req.problem_text[:100]}\n\nStep 1: Analyze the input problem statement carefully.\nStep 2: Apply standard algorithmic principles.",
-        storyboard=Storyboard(
-            title="Algorithm Visualization",
-            scenes=[
-                Scene(
-                    index=0,
-                    narration="Initialize pointer at index 0.",
-                    visual="A row of array elements with a pointer arrow at index 0.",
-                    duration_seconds=6.0,
-                ),
-                Scene(
-                    index=1,
-                    narration="Advance pointer through the array.",
-                    visual="Pointer shifts smoothly to index 1.",
-                    duration_seconds=8.0,
-                ),
-            ],
-        ),
-        revisions=0,
-    )
+    """POST /explain - Explainer agent endpoint with draft -> critique -> revise loop."""
+    try:
+        initial_state = ExplainerState(
+            problem_text=req.problem_text,
+            category=req.category,
+            user_prompt=req.user_prompt or "",
+            guardrails=req.guardrails,
+        )
+
+        final_state = explainer_graph.invoke(initial_state.model_dump())
+
+        draft = final_state.get("draft")
+        if not draft:
+            raise HTTPException(
+                status_code=502,
+                detail={"error": {"code": "model_error", "message": "Explainer agent failed to produce a valid draft."}},
+            )
+
+        # Handle dict vs Pydantic model response from LangGraph invoke
+        if isinstance(draft, dict):
+            explanation = draft.get("explanation", "")
+            sb_data = draft.get("storyboard", {})
+            if isinstance(sb_data, dict):
+                storyboard = Storyboard(
+                    title=sb_data.get("title", ""),
+                    scenes=[Scene(**s) for s in sb_data.get("scenes", [])],
+                )
+            else:
+                storyboard = sb_data
+        else:
+            explanation = draft.explanation
+            storyboard = draft.storyboard
+
+        revisions = final_state.get("revisions", 0)
+
+        return ExplainResponse(
+            explanation=explanation,
+            storyboard=storyboard,
+            revisions=revisions,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": {"code": "model_error", "message": str(e), "details": {"provider": "gemini"}}},
+        )

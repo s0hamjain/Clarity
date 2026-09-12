@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Rule 20: scripts, styles and images are local only — marked.min.js is
+         bundled, never a CDN. The two network directives exist because FRD
+         §15.1 has this page poll the coordinator itself and play the finished
+         video: connect-src for GET /api/jobs/{id}, media-src for video_url.
+         'unsafe-eval' is pywebview's bridge (window.evaluate_js runs a string). -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; style-src 'self'; script-src 'self' 'unsafe-eval'; img-src 'self' data:; connect-src http: https:; media-src http: https: blob:" />
+    <title>Clarity</title>
+    <link rel="stylesheet" href="../shared/base.css" />
+    <link rel="stylesheet" href="result.css" />
+  </head>
+  <body>
+    <div class="panel" id="panel">
+      <header class="header">
+        <span class="title">Clarity</span>
+        <button id="close" class="close no-drag" type="button" aria-label="Close">✕</button>
+      </header>
+
+      <div class="body" id="body">
+        <div class="status" id="status">Reading the problem…</div>
+
+        <div class="explanation no-drag" id="explanation" hidden></div>
+
+        <div class="note" id="note" hidden></div>
+
+        <div class="failure" id="failure" hidden>
+          <p class="failure-text" id="failure-text"></p>
+          <button id="retry" class="retry no-drag" type="button">Retry</button>
+        </div>
+
+        <div class="video-wrap no-drag" id="video-wrap" hidden>
+          <video id="video" controls autoplay muted playsinline></video>
+        </div>
+      </div>
+    </div>
+
+    <script src="../shared/marked.min.js"></script>
+    <script src="result.js"></script>
+  </body>
+</html>

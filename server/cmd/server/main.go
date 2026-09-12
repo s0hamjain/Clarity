@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/s0hamjain/Clarity/server/internal/agent"
 	"github.com/s0hamjain/Clarity/server/internal/api"
 	"github.com/s0hamjain/Clarity/server/internal/config"
 	"github.com/s0hamjain/Clarity/server/internal/jobs"
@@ -77,10 +78,24 @@ func run() error {
 	health := api.NewHealth(cfg, atlas)
 	health.Start(ctx)
 
-	worker := jobs.NewWorker(cfg, jobStore, cacheStore)
+	agentClient := agent.New(cfg.AgentURL)
+
+	// The two swap points for work that is still landing. Sprint 3 replaces
+	// sceneFn with one POST /scenes/render per scene, and renderFn with P2's
+	// render.Render; Sprint 4 deletes the flags and the fakes with them.
+	sceneFn := jobs.FakeSceneFunc
+	renderFn := api.RenderFunc(api.FakeRender)
+	if !cfg.FakeRender {
+		// render.Render does not exist yet (P2, Sprint 2-3). Refuse to start
+		// rather than pretend: a coordinator that silently renders nothing is
+		// worse than one that will not boot.
+		return errors.New("FAKE_RENDER=0 but P2's render.Render is not wired yet; leave FAKE_RENDER=1 until Sprint 3")
+	}
+
+	worker := jobs.NewWorker(cfg, jobStore, cacheStore, agentClient, sceneFn)
 	srv := &http.Server{
 		Addr:              "127.0.0.1:" + cfg.Port,
-		Handler:           api.NewServer(cfg, jobStore, cacheStore, worker, health).Routes(),
+		Handler:           api.NewServer(cfg, jobStore, cacheStore, worker, health, renderFn).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: the SSE stream in API.md §2.4 is long-lived.
 	}
