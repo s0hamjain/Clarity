@@ -23,6 +23,7 @@
   var server = (params.get("server") || "http://localhost:8080").replace(/\/+$/, "");
 
   var panel = document.getElementById("panel");
+  var dialEl = document.getElementById("dial");
   var statusEl = document.getElementById("status");
   var explanationEl = document.getElementById("explanation");
   var noteEl = document.getElementById("note");
@@ -32,6 +33,7 @@
   var videoWrap = document.getElementById("video-wrap");
   var videoEl = document.getElementById("video");
   var videoDragHandle = document.getElementById("video-drag-handle");
+  var videoFullscreenEl = document.getElementById("video-fullscreen");
   var closeEl = document.getElementById("close");
   var minimizeEl = document.getElementById("minimize");
 
@@ -65,8 +67,11 @@
 
   function setStatus(text, mode) {
     statusEl.textContent = text;
-    statusEl.classList.toggle("working", mode === "working");
     statusEl.classList.toggle("done", mode === "done");
+    // The one dial tracks "is the job still working", not "has an
+    // explanation rendered yet" — it stays up through explaining, planning,
+    // and rendering the video, and disappears only on a terminal status.
+    dialEl.hidden = mode !== "working";
   }
 
   /* ---------------------------------------------------------------- render */
@@ -251,6 +256,15 @@
     var filename = "clarity-" + (jobId || "video") + ".mp4";
     event.dataTransfer.setData("DownloadURL", "video/mp4:" + filename + ":" + url);
     event.dataTransfer.effectAllowed = "copy";
+  });
+
+  /* Full screen is the reliable fallback to dragging the video out: the
+   * standard Fullscreen API, with the older WebKit-prefixed names it takes
+   * to reach the same result inside a WKWebView. */
+  videoFullscreenEl.addEventListener("click", function () {
+    if (videoEl.requestFullscreen) videoEl.requestFullscreen();
+    else if (videoEl.webkitRequestFullscreen) videoEl.webkitRequestFullscreen();
+    else if (videoEl.webkitEnterFullscreen) videoEl.webkitEnterFullscreen();
   });
 
   /* The host closes the window through the same path as the X button, so a box

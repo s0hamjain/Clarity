@@ -54,8 +54,9 @@ class Session:
 
         self._lock = threading.Lock()
         self._spotlight: Spotlight | None = None
-        # Full-screen dim + glow shown for as long as anything below is open
-        # (FRD §15.1's "the screen tells you Clarity is working" affordance).
+        # Full-screen dim + glow, scoped to the spotlight box being open and
+        # focused — the "asking" phase, not the "waiting on a job" phase. See
+        # open_spotlight's on_blur/on_focus and _spotlight_closed.
         self._overlay: Overlay | None = None
         # What the open spotlight box would submit. It changes when the user
         # picks a recent (FRD §16.5), so the submit reads it rather than
@@ -116,6 +117,8 @@ class Session:
             on_close=self._spotlight_closed,
             on_open_recent=self._open_recent,
             on_pick_recent=self._pick_recent,
+            on_blur=self._close_overlay,
+            on_focus=self._ensure_overlay,
             expanded=expanded,
         )
         with self._lock:
@@ -182,8 +185,12 @@ class Session:
         local: dict[str, Any] | None = None,
         recent_id: str | None = None,
     ) -> ResultBox:
-        """Open a result box for a job. Boxes stack so several can stay open."""
-        self._ensure_overlay()
+        """Open a result box for a job. Boxes stack so several can stay open.
+
+        No overlay here: the glow belongs to the ask — capturing, typing,
+        picking a recent — not to watching a job run. It goes away the
+        moment the spotlight box does, whether that's a submit, a cancel, or
+        clicking over to another app (`_spotlight_closed`, `on_blur`)."""
         with self._lock:
             box = result_window.stacked_box(self._last_box, anchor)
             self._last_box = box
@@ -274,6 +281,10 @@ class Session:
     # -- window events -------------------------------------------------------
 
     def _spotlight_closed(self) -> None:
+        # The overlay's whole lifetime is scoped to the spotlight box being
+        # open — submit, cancel, or Esc all end here, and the glow goes with
+        # it regardless of whether a result box is about to take its place.
+        self._close_overlay()
         with self._lock:
             self._spotlight = None
             self._pending = None

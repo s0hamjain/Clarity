@@ -24,7 +24,10 @@
       </header>
 
       <div class="body" id="body">
-        <div class="status" id="status">Reading the problem…</div>
+        <div class="status-row">
+          <span class="dial" id="dial" aria-hidden="true"></span>
+          <span class="status" id="status">Reading the problem…</span>
+        </div>
 
         <div class="explanation no-drag" id="explanation" hidden></div>
 
@@ -37,12 +40,15 @@
 
         <div class="video-wrap no-drag" id="video-wrap" hidden>
           <video id="video" controls autoplay muted playsinline></video>
-          <div
-            id="video-drag-handle"
-            class="video-drag-handle"
-            draggable="true"
-            title="Drag out to save the video"
-          >⇩ Drag to save</div>
+          <div class="video-actions">
+            <button id="video-fullscreen" class="video-action" type="button" title="Full screen">⛶</button>
+            <div
+              id="video-drag-handle"
+              class="video-action"
+              draggable="true"
+              title="Drag out to save the video"
+            >⇩ Save</div>
+          </div>
         </div>
       </div>
     </div>

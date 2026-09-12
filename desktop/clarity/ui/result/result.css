@@ -63,27 +63,35 @@ body {
   padding: 12px 16px 18px;
 }
 
-/* One line of plain words about what the server is doing. */
+/* One loading dial, paired with one line of live status text, for as long as
+ * the job is working — result.js shows/hides `.dial` by toggling `hidden`,
+ * never two indicators on screen at once. */
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dial {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 2px solid var(--stroke);
+  border-top-color: var(--accent);
+  animation: dial-spin 0.8s linear infinite;
+}
+
+@keyframes dial-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .status {
   font-size: 12px;
   color: var(--text-dim);
-}
-
-.status.working::after {
-  content: "";
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  margin-left: 6px;
-  vertical-align: 2px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 1; }
 }
 
 .status.done {
@@ -164,17 +172,20 @@ body {
 }
 
 .retry {
-  padding: 5px 12px;
-  border: 0.5px solid var(--stroke);
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
   border-radius: 7px;
-  background: var(--field);
-  color: var(--text);
+  background: transparent;
+  color: var(--accent);
   font: inherit;
+  font-weight: 600;
   cursor: pointer;
+  transition: background 120ms ease-out, color 120ms ease-out;
 }
 
 .retry:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .video-wrap {
@@ -189,23 +200,40 @@ body {
   background: #000;
 }
 
-/* Drag this out to the Finder, Messages, etc. to save the video — the same
- * "DownloadURL" drag WebKit gives a browser attachment, so no native drag
- * session or local download step is needed (result.js's dragstart handler). */
-.video-drag-handle {
+/* Two ways to get the video out of this box: full screen (the standard
+ * Fullscreen API — always works), or drag it out to the Finder/Messages/etc.
+ * via WebKit's "DownloadURL" drag mechanism (result.js's dragstart handler;
+ * no native drag session or local download step needed). */
+.video-actions {
   position: absolute;
   top: 8px;
   right: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.video-action {
   padding: 4px 9px;
+  border: 0.5px solid var(--stroke);
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.5);
   color: var(--text);
+  font: inherit;
   font-size: 11px;
-  cursor: grab;
+  cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
+  transition: border-color 120ms ease-out;
 }
 
-.video-drag-handle:active {
+.video-action:hover {
+  border-color: var(--accent);
+}
+
+#video-drag-handle {
+  cursor: grab;
+}
+
+#video-drag-handle:active {
   cursor: grabbing;
 }

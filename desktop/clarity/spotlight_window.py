@@ -65,6 +65,12 @@ class Spotlight:
     `on_open_recent(id)` — the row has a result, so its result box reopens from
     local data — and `on_pick_recent(id)` — its screenshot becomes the capture
     in this box, for a new question about an old problem (§16.5).
+
+    `on_blur()`/`on_focus()` track this window's key (focused) state — the
+    overlay's glow is only meant to be on screen while the user is actually
+    looking at Clarity, so it comes down the moment they click over to
+    another app and back up if they click back, for as long as this box
+    stays open.
     """
 
     def __init__(
@@ -74,6 +80,8 @@ class Spotlight:
         on_close: Callable[[], None] | None = None,
         on_open_recent: Callable[[str], None] | None = None,
         on_pick_recent: Callable[[str], None] | None = None,
+        on_blur: Callable[[], None] | None = None,
+        on_focus: Callable[[], None] | None = None,
         placeholder: str | None = None,
         expanded: bool = False,
         has_capture: bool | None = None,
@@ -88,6 +96,8 @@ class Spotlight:
         self._on_close = on_close
         self._on_open_recent = on_open_recent
         self._on_pick_recent = on_pick_recent
+        self._on_blur = on_blur
+        self._on_focus = on_focus
         self._closed = threading.Event()
 
         self._proc = WindowProcess(
@@ -141,6 +151,12 @@ class Spotlight:
         elif kind == "pick_recent":
             if self._on_pick_recent is not None:
                 self._on_pick_recent(str(event.get("recent_id") or ""))
+        elif kind == "blurred":
+            if self._on_blur is not None:
+                self._on_blur()
+        elif kind == "focused":
+            if self._on_focus is not None:
+                self._on_focus()
         elif kind in ("cancel", "exited"):
             if not self._closed.is_set():
                 self._closed.set()
@@ -281,6 +297,7 @@ def run_window(payload: dict[str, Any]) -> None:
             ),
         )
         loaded.set()
+        _watch_focus(window)
 
     window.events.loaded += on_loaded
 
@@ -304,3 +321,41 @@ def run_window(payload: dict[str, Any]) -> None:
 
     window_host.listen(on_command)
     window_host.start(webview)
+
+
+def _watch_focus(window) -> None:
+    """Tell the app when this window gains/loses key status, so the overlay's
+    glow can track "is the user actually looking at Clarity right now".
+
+    A notification observer, not the window's own delegate: pywebview
+    already installs its own `WindowDelegate` on the native window
+    (`webview/platforms/cocoa.py`), and NSNotificationCenter is how a second,
+    independent observer gets added without fighting over that.
+
+    Deferred via `AppHelper.callAfter`, not called straight from this
+    `loaded` delegate callback: PyObjC's void-argument AppKit calls crash
+    with SIGILL when made synchronously from inside a WKWebView delegate
+    callback — see overlay_window.py's docstring for the repro. Registering
+    an observer isn't itself a void call, but it's cheap to stay consistent
+    with the one pattern that's confirmed safe everywhere else in this app.
+    """
+    from PyObjCTools import AppHelper
+
+    def register() -> None:
+        try:
+            import AppKit
+
+            native = window.native
+            center = AppKit.NSNotificationCenter.defaultCenter()
+            center.addObserverForName_object_queue_usingBlock_(
+                AppKit.NSWindowDidResignKeyNotification, native, None,
+                lambda note: window_host.emit("blurred"),
+            )
+            center.addObserverForName_object_queue_usingBlock_(
+                AppKit.NSWindowDidBecomeKeyNotification, native, None,
+                lambda note: window_host.emit("focused"),
+            )
+        except Exception:  # noqa: BLE001 — cosmetic; the box still works
+            log.debug("could not watch focus", exc_info=True)
+
+    AppHelper.callAfter(register)
