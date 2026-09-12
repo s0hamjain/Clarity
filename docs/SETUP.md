@@ -2,6 +2,20 @@
 
 **Version:** 3.0
 
+### What you're setting up
+
+Clarity is four programs plus a few services, all running on your Mac:
+
+| You'll run… | Which is… | From |
+|---|---|---|
+| The **agent service** | Python server that calls Claude | §8 |
+| The **coordinator** | Go server the desktop app talks to | §9 |
+| The **desktop app** | The menu-bar app itself | §10 |
+| **Docker** with the `manim-worker` image | Sandbox every animation renders inside | §6 |
+| **MinIO** | A local stand-in for S3, holds finished videos | §7 |
+
+…and you'll need accounts for **MongoDB Atlas** (free; database + vector search), **Anthropic** (the model), and **Voyage AI** (embeddings). Sections 3–5 walk through each.
+
 This document walks every engineer through the full environment setup required to develop and run the whole system on one Mac. Complete **all sections** before starting sprint work. The two steps most likely to burn time if left for later are the `manim-worker` Docker build (§6) and the macOS permission prompts for the desktop app (§10) — do those first.
 
 Assumes macOS 14+ on Apple Silicon with Homebrew. Linux works for everything except the desktop app and installer.

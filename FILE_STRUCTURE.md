@@ -1,5 +1,7 @@
 # Clarity — File Structure
 
+Where every file lives and who owns it. Nothing under `agent/`, `server/`, `desktop/`, `docker/`, or `samples/` exists yet — each person creates their own directory in Sprint 1 following this layout, so that paths cited in the other docs stay true. Comments after `#` say what each file is for.
+
 ## Root
 
 ```

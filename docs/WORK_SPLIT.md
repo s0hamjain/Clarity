@@ -4,6 +4,15 @@
 **Engineers:** 4 (P1, P2, P3, P4)
 **Structure:** 5 sprints. Everyone works on their own branch until the end of a sprint, then everyone's work is merged together at the sync point. Nobody is ever blocked — every path fakes its dependencies until the real thing lands.
 
+### How to read this
+
+- **Find your role** in the Path Overview below — P1, P2, P3, or P4. That's your one-sentence job and your directory.
+- **Jump to the current sprint** and read only your section. Each step names the files to create and cites the exact spec section (e.g. "FRD §10.3" = `docs/FRD.md`, section 10.3) so you never have to guess a field name.
+- **Check "What each path fakes."** If something you depend on isn't built yet, that table says what to stub so you can keep going.
+- **Before the sync point**, run through your items in that sprint's checklist. Then follow the Merge Protocol at the bottom.
+
+A *sprint* is a time-boxed chunk of work. A *sync point* is the meeting at its end where everyone's branch is merged into `main` and we check the whole thing still works together.
+
 All shapes referenced below are in `docs/FRD.md`. Section numbers (e.g. "FRD §10.3") point there.
 
 ---

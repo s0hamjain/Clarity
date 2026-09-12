@@ -3,6 +3,10 @@
 **Version:** 1.0
 **Status:** planning — no code yet
 
+### How to read this
+
+There are two servers. The **coordinator** (Go, port 8080) is what the desktop app talks to — think of it as the public API. The **agent service** (Python, port 8000) is internal: only the coordinator calls it, and it's the only thing that calls Claude. If you're on the desktop app you only care about §2. If you're on the agent service you only care about §3. §4–§7 (errors, lifecycle, sequence, limits) apply to both.
+
 Two HTTP services. This document is the authoritative reference for every endpoint on both: method, path, who calls it, request, response, errors. `docs/FRD.md` §10–§11 summarize the same shapes in context; if the two ever disagree, fix the FRD to match this file.
 
 | Service | Base URL (dev) | Owner | Called by |
