@@ -1,5 +1,9 @@
 """`python -m clarity` — run the menu-bar app.
 
+This module is also PyInstaller's entry script (`scripts/build_app.sh`), which
+compiles it as `__main__` with no parent package — so every import here is
+absolute. The rest of the package uses relative imports as usual.
+
     python -m clarity              menu bar icon appears; the hotkey is live
     python -m clarity --once       one capture through the whole flow — spotlight
                                    box, submit, result box — then exit
@@ -20,6 +24,11 @@ from pathlib import Path
 
 
 def _parse(argv: list[str]) -> argparse.Namespace:
+    # LaunchServices can append a `-psn_0_…` process serial number when it opens
+    # an .app. argparse would exit(2) on it, and a windowed bundle has nowhere to
+    # show the error, so the app would just never appear.
+    argv = [a for a in argv if not a.startswith("-psn_")]
+
     p = argparse.ArgumentParser(prog="clarity", description="Clarity menu-bar app")
     p.add_argument("--once", action="store_true", help="run one capture without the hotkey and exit")
     p.add_argument(
@@ -49,8 +58,8 @@ def _run_session(open_windows) -> int:
     """
     import threading
 
-    from .config import Config
-    from .session import Session
+    from clarity.config import Config
+    from clarity.session import Session
 
     config = Config()
     idle = threading.Event()
@@ -68,7 +77,7 @@ def _run_session(open_windows) -> int:
 def _run_recents() -> int:
     """The recents list on its own — the one path that needs no server and no
     capture (FRD §16.5)."""
-    from .recents import Recents
+    from clarity.recents import Recents
 
     entries = Recents().list()
     print(f"{len(entries)} recent(s)")
@@ -88,7 +97,7 @@ def _run_once(save: str | None, ask: bool) -> int:
     With `ask` (the default) it runs the real flow: spotlight box, submit to the
     coordinator, result box, and it waits until the last window is closed.
     """
-    from . import capture
+    from clarity import capture
 
     cap = capture.capture_region()
     if cap is None:
@@ -118,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.window_host:
         # A window process: it sets up its own logging to stderr, because stdout
         # is the protocol back to the app.
-        from .window_host import run
+        from clarity.window_host import run
 
         return run(args.window_host)
 
@@ -134,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.once:
         return _run_once(args.save, ask=not args.no_ask)
 
-    from .app import main as app_main
+    from clarity.app import main as app_main
 
     app_main()
     return 0
