@@ -1,4 +1,4 @@
-# Ambient Visual Learning Tool — Setup Guide
+# Clarity — Setup Guide
 
 **Version:** 3.0
 
@@ -62,8 +62,8 @@ open -a Docker         # start Docker Desktop; wait for "Docker Desktop is runni
 ### 2.1 Clone
 
 ```sh
-git clone https://github.com/s0hamjain/HackCMU.git
-cd HackCMU
+git clone https://github.com/s0hamjain/Clarity.git
+cd Clarity
 ```
 
 ### 2.2 Directory skeleton
@@ -125,12 +125,12 @@ That number (1024) must match `numDimensions` in the vector index (§5.4).
 One free-tier cluster holds everything persistent: `jobs`, `cache`, and `manim_snippets` (with its vector index). One person creates the cluster and shares the connection string; everyone points at the same cluster.
 
 ### 5.1 Create the cluster
-1. https://cloud.mongodb.com → sign up → **Create** → **M0 Free** → region closest to you → name it `avlt`.
+1. https://cloud.mongodb.com → sign up → **Create** → **M0 Free** → region closest to you → name it `clarity`.
 2. Wait for deployment (~2 min).
 
 ### 5.2 Database user
 1. **Security → Database Access → Add New Database User.**
-2. Username `avlt`, autogenerate a password, role **Read and write to any database**. Save the password.
+2. Username `clarity`, autogenerate a password, role **Read and write to any database**. Save the password.
 
 ### 5.3 Network access
 1. **Security → Network Access → Add IP Address → Allow Access from Anywhere** (`0.0.0.0/0`).
@@ -138,7 +138,7 @@ One free-tier cluster holds everything persistent: `jobs`, `cache`, and `manim_s
 
 ### 5.4 Connection string
 1. **Database → Connect → Drivers → Python**. Copy the `mongodb+srv://...` string.
-2. Replace `<password>`, append `/avlt`. Put it in **both** `agent/.env` and `server/.env` as `MONGODB_URI`.
+2. Replace `<password>`, append `/clarity`. Put it in **both** `agent/.env` and `server/.env` as `MONGODB_URI`.
 
 ### 5.5 Vector Search index
 
@@ -149,7 +149,7 @@ The `manim_snippets` collection needs an Atlas Vector Search index named `snippe
 cd agent && python scripts/seed_snippets.py --create-index
 ```
 
-**Via UI:** Database → Browse Collections → `avlt.manim_snippets` → **Search Indexes → Create → Atlas Vector Search → JSON Editor**, name `snippets_vector`:
+**Via UI:** Database → Browse Collections → `clarity.manim_snippets` → **Search Indexes → Create → Atlas Vector Search → JSON Editor**, name `snippets_vector`:
 
 ```json
 {
@@ -228,8 +228,8 @@ docker run -d --name minio -p 9000:9000 -p 9001:9001 \
 
 brew install minio/stable/mc
 mc alias set local http://localhost:9000 minioadmin minioadmin
-mc mb local/avlt-renders
-mc anonymous set download local/avlt-renders     # public-read, matches FRD §14.6
+mc mb local/clarity-renders
+mc anonymous set download local/clarity-renders     # public-read, matches FRD §14.6
 ```
 
 Console: http://localhost:9001 (minioadmin / minioadmin).
@@ -298,18 +298,18 @@ screencapture -i /tmp/x.png          # → macOS asks for Screen Recording. Gran
 
 ```sh
 python -c "from pynput import keyboard; print('ok')"
-python -m avlt --once                # → macOS asks for Input Monitoring. Grant it.
+python -m clarity --once                # → macOS asks for Input Monitoring. Grant it.
 ```
 **Quit and reopen Terminal** again.
 
 ### 10.3 Run
 
 ```sh
-python -m avlt                       # menu bar icon appears; ⌘⇧E is live
-python -m avlt --once                # one capture without the hotkey — for testing the pipeline
+python -m clarity                       # menu bar icon appears; ⌘⇧E is live
+python -m clarity --once                # one capture without the hotkey — for testing the pipeline
 ```
 
-Server URL defaults to `http://localhost:8080`. Change it via the menu bar **Server…** item or edit `~/Library/Application Support/AVLT/config.json`.
+Server URL defaults to `http://localhost:8080`. Change it via the menu bar **Server…** item or edit `~/Library/Application Support/Clarity/config.json`.
 
 ### 10.4 UI development without the backend
 
@@ -328,26 +328,26 @@ P4 owns these scripts; anyone can run them.
 macOS keys the Screen Recording permission to the app's code signature. An unsigned build changes identity every rebuild and the permission resets. A free self-signed certificate gives a stable identity.
 
 1. **Keychain Access → Certificate Assistant → Create a Certificate.**
-2. Name `AVLT Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**. Create.
+2. Name `Clarity Dev`, Identity Type **Self Signed Root**, Certificate Type **Code Signing**. Create.
 
 ### 11.2 Build the `.app`
 
 ```sh
 cd desktop && source .venv/bin/activate
-./scripts/build_app.sh               # pyinstaller → dist/AVLT.app, patches Info.plist (LSUIElement), codesigns with "AVLT Dev"
-open dist/AVLT.app                   # menu bar icon should appear
+./scripts/build_app.sh               # pyinstaller → dist/Clarity.app, patches Info.plist (LSUIElement), codesigns with "Clarity Dev"
+open dist/Clarity.app                   # menu bar icon should appear
 ```
 
 ### 11.3 Build the `.dmg`
 
 ```sh
-./scripts/build_dmg.sh               # create-dmg → dist/AVLT.dmg
+./scripts/build_dmg.sh               # create-dmg → dist/Clarity.dmg
 ```
 
 ### 11.4 Build the `.pkg` (optional — adds start-at-login)
 
 ```sh
-./scripts/build_pkg.sh               # pkgbuild + productbuild → dist/AVLT.pkg; post-install writes the LaunchAgent
+./scripts/build_pkg.sh               # pkgbuild + productbuild → dist/Clarity.pkg; post-install writes the LaunchAgent
 ```
 
 ### 11.5 Install like a user would
@@ -357,7 +357,7 @@ Mount the DMG, drag to Applications, open. On macOS 15 the unsigned app is block
 ### 11.6 Release
 
 ```sh
-gh release create v0.1.0 desktop/dist/AVLT.dmg desktop/dist/AVLT.pkg --title "AVLT 0.1.0" --notes-file desktop/RELEASE_NOTES.md
+gh release create v0.1.0 desktop/dist/Clarity.dmg desktop/dist/Clarity.pkg --title "Clarity 0.1.0" --notes-file desktop/RELEASE_NOTES.md
 ```
 
 ---
@@ -369,8 +369,8 @@ gh release create v0.1.0 desktop/dist/AVLT.dmg desktop/dist/AVLT.pkg --title "AV
 ```sh
 ANTHROPIC_API_KEY=sk-ant-...
 VOYAGE_API_KEY=pa-...
-MONGODB_URI=mongodb+srv://avlt:<password>@avlt.xxxxx.mongodb.net/avlt
-MONGODB_DB=avlt
+MONGODB_URI=mongodb+srv://clarity:<password>@clarity.xxxxx.mongodb.net/clarity
+MONGODB_DB=clarity
 EMBED_MODEL=voyage-code-3
 ```
 
@@ -379,18 +379,18 @@ EMBED_MODEL=voyage-code-3
 ```sh
 PORT=8080
 AGENT_URL=http://localhost:8000
-MONGODB_URI=mongodb+srv://avlt:<password>@avlt.xxxxx.mongodb.net/avlt
-MONGODB_DB=avlt
+MONGODB_URI=mongodb+srv://clarity:<password>@clarity.xxxxx.mongodb.net/clarity
+MONGODB_DB=clarity
 S3_ENDPOINT=http://localhost:9000
 S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
-RENDER_BUCKET=avlt-renders
+RENDER_BUCKET=clarity-renders
 RENDER_CONCURRENCY=4
 RENDER_TIMEOUT_SEC=120
 MANIM_QUALITY=-ql
 ```
 
-### 12.3 Desktop — `~/Library/Application Support/AVLT/config.json`
+### 12.3 Desktop — `~/Library/Application Support/Clarity/config.json`
 
 Created on first run. No secrets.
 
@@ -413,7 +413,7 @@ Four processes plus Docker:
 open -a Docker && docker start minio
 cd agent   && source .venv/bin/activate && uvicorn app.main:app --port 8000
 cd server  && go run ./cmd/server
-cd desktop && source .venv/bin/activate && python -m avlt
+cd desktop && source .venv/bin/activate && python -m clarity
 ```
 
 Then `⌘⇧E`, drag a box around a problem, press Enter.
@@ -429,7 +429,7 @@ Then `⌘⇧E`, drag a box around a problem, press Enter.
 | 3 | Docker running | `docker info` | no error |
 | 4 | `manim-worker` built | `docker images manim-worker` | one row |
 | 5 | Container renders LaTeX | §6.2 smoke test | `out.mp4` exists |
-| 6 | MinIO up + bucket public | `mc anonymous get local/avlt-renders` | `download` |
+| 6 | MinIO up + bucket public | `mc anonymous get local/clarity-renders` | `download` |
 | 7 | Atlas reachable | §5.7 ping | `{'ok': 1.0}` |
 | 8 | Vector index active | Atlas UI → Search Indexes | `snippets_vector` **Active** |
 | 9 | Voyage key works | §4 sanity check | `1024` |
@@ -437,7 +437,7 @@ Then `⌘⇧E`, drag a box around a problem, press Enter.
 | 11 | Corpus seeded | `curl localhost:8000/healthz` | `snippets_verified` ≥ 20 |
 | 12 | Coordinator healthy | `curl localhost:8080/healthz` | all `true` |
 | 13 | Screen Recording granted | `screencapture -i /tmp/x.png` from Terminal | crosshair appears |
-| 14 | Input Monitoring granted | `python -m avlt` then `⌘⇧E` | crosshair appears |
+| 14 | Input Monitoring granted | `python -m clarity` then `⌘⇧E` | crosshair appears |
 | 15 | `.env` ignored | `git check-ignore agent/.env server/.env` | both printed |
 
 ---
@@ -448,11 +448,11 @@ Then `⌘⇧E`, drag a box around a problem, press Enter.
 - **Docker daemon not running** — Docker Desktop must be open, not just installed.
 - **`$vectorSearch` returns nothing** — index not yet **Active**, or `numDimensions` ≠ 1024, or every document is `verified: false`. Check `snippets_verified` in `/healthz`.
 - **Embeddings dimension mismatch on insert** — `EMBED_MODEL` changed. Drop and recreate the index, re-run the seed script.
-- **MinIO uploads succeed but the panel can't play the video** — bucket isn't public-read. `mc anonymous set download local/avlt-renders`.
+- **MinIO uploads succeed but the panel can't play the video** — bucket isn't public-read. `mc anonymous set download local/clarity-renders`.
 - **`ffmpeg concat` fails** — codec mismatch between scenes. Confirm every scene in the job used the same `MANIM_QUALITY`.
 - **Hotkey does nothing** — Input Monitoring not granted to *this* terminal app, or you didn't restart it after granting. System Settings → Privacy & Security → Input Monitoring.
 - **`screencapture` produces no file and no crosshair** — Screen Recording not granted to this terminal app. Same fix.
 - **"Python is accessing your screen" prompt keeps appearing** — macOS 15 re-prompts periodically for apps not using ScreenCaptureKit. Click Allow. The built `.app` with a stable signature prompts less.
-- **Built `.app` asks for permissions again after every rebuild** — it isn't being signed with the `AVLT Dev` certificate. Check `build_app.sh`'s `codesign` step.
+- **Built `.app` asks for permissions again after every rebuild** — it isn't being signed with the `Clarity Dev` certificate. Check `build_app.sh`'s `codesign` step.
 - **Cache ignores prompt changes** — `PromptVersion` not bumped. `server/internal/cache/key.go`.
 - **Job stuck in `rendering`** — a goroutine panicked without `recover()`, or `updated_at` wasn't refreshed and the TTL index deleted the job. Check coordinator logs.

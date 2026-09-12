@@ -1,9 +1,9 @@
-# Ambient Visual Learning Tool — File Structure
+# Clarity — File Structure
 
 ## Root
 
 ```
-HackCMU/
+Clarity/
 ├── .gitignore
 ├── README.md
 ├── AGENTS.md                  # Start here. Project summary, doc map, rules, protocol, sprint index.
@@ -152,11 +152,11 @@ desktop/
 ├── README.md                       # User-facing: install from DMG, "Open Anyway" on macOS 15, the two permissions + restarts
 ├── RELEASE_NOTES.md                # Written from the second-Mac install in Sprint 4
 │
-├── avlt/
+├── clarity/
 │   ├── __init__.py
-│   ├── __main__.py                 # `python -m avlt`; `--once` runs a single capture without the hotkey
+│   ├── __main__.py                 # `python -m clarity`; `--once` runs a single capture without the hotkey
 │   ├── app.py                      # rumps.App: Capture · Recents · Guardrails (checkbox) · Server… · Clear Recents · Quit
-│   ├── config.py                   # ~/Library/Application Support/AVLT/config.json — server_url, guardrails, hotkey
+│   ├── config.py                   # ~/Library/Application Support/Clarity/config.json — server_url, guardrails, hotkey
 │   ├── hotkey.py                   # pynput GlobalHotKeys; 2 s debounce; dispatches capture to a worker thread
 │   ├── capture.py                  # screencapture -i -x; Esc → None; Pillow thumbnail ≤1568 px; PNG data URL
 │   ├── recents.py                  # recents.json + recents/<id>.png + <id>_thumb.png; add() before POST; update() from
@@ -191,11 +191,11 @@ desktop/
 │   └── dmg_background.png
 │
 ├── scripts/
-│   ├── build_app.sh                # pyinstaller --windowed --hidden-import … --add-data ui → dist/AVLT.app;
-│   │                               #   patch Info.plist LSUIElement=true; codesign -s "AVLT Dev" --deep --force
-│   ├── build_dmg.sh                # create-dmg → dist/AVLT.dmg
-│   ├── build_pkg.sh                # pkgbuild + productbuild → dist/AVLT.pkg; postinstall writes LaunchAgent
-│   └── postinstall.sh              # ~/Library/LaunchAgents/com.avlt.app.plist
+│   ├── build_app.sh                # pyinstaller --windowed --hidden-import … --add-data ui → dist/Clarity.app;
+│   │                               #   patch Info.plist LSUIElement=true; codesign -s "Clarity Dev" --deep --force
+│   ├── build_dmg.sh                # create-dmg → dist/Clarity.dmg
+│   ├── build_pkg.sh                # pkgbuild + productbuild → dist/Clarity.pkg; postinstall writes LaunchAgent
+│   └── postinstall.sh              # ~/Library/LaunchAgents/com.clarity.app.plist
 │
 └── dist/                           # Build output. Gitignored.
 ```

@@ -1,4 +1,4 @@
-# Ambient Visual Learning Tool
+# Clarity
 
 Press a hotkey on any math or algorithm problem on your screen — a PDF, an IDE, a browser, a slide. Drag a box around it. Add context in a translucent Spotlight-style box (*"why is my binary search not working? visualize where it's messing up"*), or pull up a recent screenshot and ask again. Get a step-by-step written explanation in seconds, and a custom animated walkthrough of that exact problem about a minute later.
 
@@ -17,8 +17,8 @@ A macOS menu-bar app backed by a Go coordinator, a Python agent service calling 
 
 ## Install (once a release exists)
 
-1. Download `AVLT.dmg` from the latest [GitHub Release](https://github.com/s0hamjain/HackCMU/releases).
-2. Drag **AVLT** to Applications and open it. On macOS 15: **System Settings → Privacy & Security → Open Anyway**.
+1. Download `Clarity.dmg` from the latest [GitHub Release](https://github.com/s0hamjain/Clarity/releases).
+2. Drag **Clarity** to Applications and open it. On macOS 15: **System Settings → Privacy & Security → Open Anyway**.
 3. Grant **Screen Recording** when asked, relaunch. Press `⌘⇧E`; grant **Input Monitoring**, relaunch.
 4. `⌘⇧E`, drag a box around a problem, type any context, press Enter. Press ↓ in the box to pick a recent screenshot instead.
 

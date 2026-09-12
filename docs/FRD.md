@@ -1,4 +1,4 @@
-# Ambient Visual Learning Tool
+# Clarity
 ## Functional Requirements Document
 **A desktop tool that turns any on-screen math or algorithm problem into a written explanation and a custom-rendered animated video**
 **Version 3.0**  |  **Status: Build-ready specification**
@@ -159,7 +159,7 @@ One database (MongoDB Atlas) holds three collections. One object store (S3, MinI
 
 # 9. Database Schema (MongoDB Atlas)
 
-Database: `avlt`. Connection string in `MONGODB_URI`.
+Database: `clarity`. Connection string in `MONGODB_URI`.
 
 ### 9.1 `jobs`
 
@@ -188,7 +188,7 @@ Index: `{ updated_at: 1 }` with `expireAfterSeconds: 86400`. **Every write must 
 ```js
 {
   _id:          "a3f9c1d2e4b57680",       // problem_hash
-  video_url:    "http://localhost:9000/avlt-renders/renders/a3f9c1d2e4b57680.mp4",
+  video_url:    "http://localhost:9000/clarity-renders/renders/a3f9c1d2e4b57680.mp4",
   explanation:  "**Step 1.** ...",
   created_at:   ISODate()                 // TTL index, expireAfterSeconds: 604800
 }
@@ -504,15 +504,15 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | Result content | Status line in plain words ("Reading the problem…", "Writing explanation…", "Rendering scene 2 of 3…", "Done"). Explanation rendered from markdown (`marked.min.js`, bundled — no CDN). `<video controls autoplay muted>` when `video_url` arrives. `done` with null video → explanation + quiet note. 180 s timeout → message + retry. Every poll that adds `problem_text`, `explanation`, or `video_url` updates the local recent. |
 | Reopen from recents | If the local recent has `explanation`/`video_url`, render from local data first, then poll `GET /api/jobs/{id}` once; a `404` is fine — the local copy is the source. |
 | Notification | macOS notification when the explanation lands, so the user doesn't have to watch the window. |
-| Config | `SERVER_URL` from `~/Library/Application Support/AVLT/config.json`, default `http://localhost:8080`, editable via the **Server…** menu item. |
+| Config | `SERVER_URL` from `~/Library/Application Support/Clarity/config.json`, default `http://localhost:8080`, editable via the **Server…** menu item. |
 
 ### 15.2 Build and installer
 | Artifact | How | Priority |
 |---|---|---|
-| `AVLT.app` | `pyinstaller --windowed --name AVLT --icon assets/icon.icns desktop/avlt/main.py`, with `--hidden-import` for `rumps`, `pynput.keyboard._darwin`, `webview`. `LSUIElement` added to `Info.plist` post-build. `ui/` bundled via `--add-data`. | Must |
-| Stable identity | Sign with a **free self-signed certificate** (`codesign -s "AVLT Dev"`) so macOS keys the Screen Recording permission to a stable identity and it survives rebuilds. | Must |
-| `AVLT.dmg` | `create-dmg` with drag-to-Applications layout and background. | Must |
-| `AVLT.pkg` | `pkgbuild` + `productbuild`; post-install script writes `~/Library/LaunchAgents/com.avlt.app.plist` so it starts at login. | Should |
+| `Clarity.app` | `pyinstaller --windowed --name Clarity --icon assets/icon.icns desktop/clarity/main.py`, with `--hidden-import` for `rumps`, `pynput.keyboard._darwin`, `webview`. `LSUIElement` added to `Info.plist` post-build. `ui/` bundled via `--add-data`. | Must |
+| Stable identity | Sign with a **free self-signed certificate** (`codesign -s "Clarity Dev"`) so macOS keys the Screen Recording permission to a stable identity and it survives rebuilds. | Must |
+| `Clarity.dmg` | `create-dmg` with drag-to-Applications layout and background. | Must |
+| `Clarity.pkg` | `pkgbuild` + `productbuild`; post-install script writes `~/Library/LaunchAgents/com.clarity.app.plist` so it starts at login. | Should |
 | Release | Attached to a GitHub Release with install instructions including the "Open Anyway" step for unsigned apps on macOS 15. | Must |
 | Notarization | Deferred. Requires Apple Developer Program. Everything above works without it; the user does one "Open Anyway" per install. | Out (for now) |
 
@@ -521,7 +521,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 # 16. Functional Requirements — End-to-End Flow
 
 ## 16.1 Install
-1. User downloads `AVLT.dmg`, drags to Applications, opens.
+1. User downloads `Clarity.dmg`, drags to Applications, opens.
 2. macOS 15 blocks the unsigned app → System Settings → Privacy & Security → Open Anyway.
 3. App requests Screen Recording; user grants; app asks to restart. App requests Input Monitoring on first hotkey registration; same.
 4. Menu bar icon appears. `⌘⇧E` is live.
@@ -585,10 +585,10 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 ### Installer
 | # | Requirement | Priority |
 |---|---|---|
-| F12 | `AVLT.app` builds reproducibly from `scripts/build_app.sh`. | Must |
+| F12 | `Clarity.app` builds reproducibly from `scripts/build_app.sh`. | Must |
 | F13 | The app is signed with a stable (self-signed) identity so permissions survive rebuilds. | Must |
-| F14 | `AVLT.dmg` is produced by `scripts/build_dmg.sh` and attached to a GitHub Release. | Must |
-| F15 | `AVLT.pkg` installs a LaunchAgent for start-at-login. | Should |
+| F14 | `Clarity.dmg` is produced by `scripts/build_dmg.sh` and attached to a GitHub Release. | Must |
+| F15 | `Clarity.pkg` installs a LaunchAgent for start-at-login. | Should |
 | F16 | README documents the macOS 15 "Open Anyway" step. | Must |
 
 ### Agent service
@@ -673,7 +673,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 - The desktop app holds no secrets. It talks only to the coordinator.
 - Generated code runs only inside `--network none` containers, after a static pre-check. Never on the host.
 - Server side, screenshots are processed and discarded. The coordinator logs the hash, never the image. Images are not written to Atlas or S3.
-- Client side, screenshots are kept **only on the user's machine** in `~/Library/Application Support/AVLT/recents/` for the recents feature. Rolling 50. The menu bar has **Clear Recents**. Nothing in recents is ever uploaded except when the user explicitly re-asks.
+- Client side, screenshots are kept **only on the user's machine** in `~/Library/Application Support/Clarity/recents/` for the recents feature. Rolling 50. The menu bar has **Clear Recents**. Nothing in recents is ever uploaded except when the user explicitly re-asks.
 - The coordinator has no auth. It is bound to `localhost` by default. Exposing it beyond the machine requires a bearer token and rate limiting first — out of scope here, documented so nobody does it by accident.
 
 ---
@@ -698,8 +698,8 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 |---|---|---|
 | `ANTHROPIC_API_KEY` | `sk-ant-…` | Claude |
 | `VOYAGE_API_KEY` | `pa-…` | Embeddings |
-| `MONGODB_URI` | `mongodb+srv://…/avlt` | Atlas |
-| `MONGODB_DB` | `avlt` | Database name |
+| `MONGODB_URI` | `mongodb+srv://…/clarity` | Atlas |
+| `MONGODB_DB` | `clarity` | Database name |
 | `EMBED_MODEL` | `voyage-code-3` | Must match the vector index dims |
 
 ### `server/.env`
@@ -708,15 +708,15 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 | `PORT` | `8080` | |
 | `AGENT_URL` | `http://localhost:8000` | |
 | `MONGODB_URI` | — | Atlas |
-| `MONGODB_DB` | `avlt` | |
+| `MONGODB_DB` | `clarity` | |
 | `S3_ENDPOINT` | `http://localhost:9000` | MinIO locally |
 | `S3_ACCESS_KEY` / `S3_SECRET_KEY` | `minioadmin` / `minioadmin` | |
-| `RENDER_BUCKET` | `avlt-renders` | |
+| `RENDER_BUCKET` | `clarity-renders` | |
 | `RENDER_CONCURRENCY` | `NumCPU/2` | |
 | `RENDER_TIMEOUT_SEC` | `120` | |
 | `MANIM_QUALITY` | `-ql` | `-qm` for release |
 
-### Desktop (`~/Library/Application Support/AVLT/config.json`)
+### Desktop (`~/Library/Application Support/Clarity/config.json`)
 | Key | Default |
 |---|---|
 | `server_url` | `http://localhost:8080` |

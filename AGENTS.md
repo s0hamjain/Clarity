@@ -1,4 +1,4 @@
-# AGENTS.md — Ambient Visual Learning Tool
+# AGENTS.md — Clarity
 
 This file is the single point of entry for anyone — person or coding agent — working on this project. Read it in full before writing any code. It says what the project is, where the authoritative details live, what rules must never be broken, and what every sprint requires of every person.
 
@@ -6,7 +6,7 @@ This file is the single point of entry for anyone — person or coding agent —
 
 ## 1. Project Summary
 
-The Ambient Visual Learning Tool is a macOS desktop app that turns any math or algorithm problem on screen into a written explanation and a custom animated video. The flow: the student presses a hotkey and **drags a region** around the problem — in a PDF, an IDE, a browser, a slide. A clear Spotlight-style box **animates in**; they add context if they want (*"why is my binary search not working? visualize where it's messing up"*) or pull up a recent screenshot, and press **Enter**. A clear result box appears with the written explanation within seconds and the animated walkthrough about a minute later. They can **drag the box anywhere** so it doesn't cover the problem, and click **X** when done. The animation is generated for that specific problem: a model writes Manim code, grounded in retrieved examples of verified working Manim, and the system renders it.
+The Clarity is a macOS desktop app that turns any math or algorithm problem on screen into a written explanation and a custom animated video. The flow: the student presses a hotkey and **drags a region** around the problem — in a PDF, an IDE, a browser, a slide. A clear Spotlight-style box **animates in**; they add context if they want (*"why is my binary search not working? visualize where it's messing up"*) or pull up a recent screenshot, and press **Enter**. A clear result box appears with the written explanation within seconds and the animated walkthrough about a minute later. They can **drag the box anywhere** so it doesn't cover the problem, and click **X** when done. The animation is generated for that specific problem: a model writes Manim code, grounded in retrieved examples of verified working Manim, and the system renders it.
 
 The stack is a **Python menu-bar desktop app** (`rumps`, `pynput`, `pywebview`, built into a `.app` with PyInstaller and distributed as a `.dmg`), a **Go coordinator** (public HTTP API, job lifecycle, cache, per-scene render orchestration), a **Python agent service** (FastAPI; every Claude call; Voyage AI embeddings; retrieval over MongoDB Atlas Vector Search), **MongoDB Atlas** (jobs, cache, and the Manim snippet corpus), **Docker** (one isolated `manim-worker` container per scene), **ffmpeg** (concatenation without re-encoding), and **S3** (MinIO locally) for finished videos.
 

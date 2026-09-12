@@ -1,4 +1,4 @@
-# Ambient Visual Learning Tool — Work Split
+# Clarity — Work Split
 
 **Version:** 3.0
 **Engineers:** 4 (P1, P2, P3, P4)
@@ -108,19 +108,19 @@ Render each in the container. **Watch each one.** A scene that renders but overl
 
 ### P4 — Menu Bar App, Hotkey, Capture, Permissions
 
-**Deliverables:** `python -m avlt` puts an icon in the menu bar; `⌘⇧E` opens a region select; the PNG lands on disk downscaled; both permissions granted and documented.
+**Deliverables:** `python -m clarity` puts an icon in the menu bar; `⌘⇧E` opens a region select; the PNG lands on disk downscaled; both permissions granted and documented.
 
 **Step 1 — Permissions first** (ref: SETUP §10.2)
 From Terminal.app, run `screencapture -i` and a `pynput` listener; grant both; restart Terminal both times. Write down exactly what happened in `desktop/README.md` — this becomes the user-facing install note.
 
 **Step 2 — App skeleton** (ref: FRD §15.1)
-`desktop/avlt/__main__.py`, `desktop/avlt/app.py` (a `rumps.App` subclass: menu items **Capture**, **Recents**, **Guardrails** (checkbox), **Server…**, **Clear Recents**, **Quit**), `desktop/avlt/config.py` (reads/writes `~/Library/Application Support/AVLT/config.json`). `--once` flag runs one capture and exits.
+`desktop/clarity/__main__.py`, `desktop/clarity/app.py` (a `rumps.App` subclass: menu items **Capture**, **Recents**, **Guardrails** (checkbox), **Server…**, **Clear Recents**, **Quit**), `desktop/clarity/config.py` (reads/writes `~/Library/Application Support/Clarity/config.json`). `--once` flag runs one capture and exits.
 
 **Step 2b — Prove the window trick** (ref: FRD §24)
 Ten-line spike: `webview.create_window("x", html="<body style='background:transparent'>hi</body>", frameless=True, transparent=True, vibrancy=True, on_top=True)`. If it's translucent and blurred over your desktop, the spotlight design works as specified. If not, note it — Sprint 2 uses the solid fallback.
 
 **Step 3 — Hotkey + capture** (ref: FRD §15.1)
-`desktop/avlt/hotkey.py` (`pynput.keyboard.GlobalHotKeys`, 2 s debounce, runs the capture on a worker thread so the listener isn't blocked), `desktop/avlt/capture.py` (`screencapture -i -x`, Esc → `None`, `Pillow` thumbnail to 1568 px, returns a PNG data URL).
+`desktop/clarity/hotkey.py` (`pynput.keyboard.GlobalHotKeys`, 2 s debounce, runs the capture on a worker thread so the listener isn't blocked), `desktop/clarity/capture.py` (`screencapture -i -x`, Esc → `None`, `Pillow` thumbnail to 1568 px, returns a PNG data URL).
 
 **Step 4 — Stub coordinator** (ref: FRD §11.2)
 `desktop/stub/stub_server.py`: 40 lines, `http.server`, walks a job through every status on a timer with a sample explanation and a sample MP4 URL. This is what the result box is built against in Sprint 2.
@@ -136,7 +136,7 @@ Ten-line spike: `webview.create_window("x", html="<body style='background:transp
 4. One real `/vision` call returns verbatim text for a real screenshot.
 5. Collision experiment number is known: **N distinct out of 6.**
 6. `curl -X POST localhost:8080/api/jobs` → job ID; polling walks through every status; the job is visible in Atlas.
-7. `python -m avlt --once` → crosshair → PNG on disk under 8 MB.
+7. `python -m clarity --once` → crosshair → PNG on disk under 8 MB.
 7b. The transparent/vibrancy spike window rendered (or the fallback decision is recorded).
 8. Merge all branches to `main` per the Merge Protocol. Tag `sprint-1`.
 
@@ -202,13 +202,13 @@ Cover: `Axes` + `plot` with a moving dot; `Transform` between two `MathTex`; `VG
 ### P4 — Spotlight Box, Result Box, Real Submit
 
 **Step 1 — Spotlight box** (ref: FRD §5, §15.1)
-`desktop/avlt/spotlight_window.py` + `desktop/avlt/ui/spotlight/{index.html,spotlight.js,spotlight.css}`. `webview.create_window(..., frameless=True, transparent=True, vibrancy=True, on_top=True, width=680, height=96)` centered on the display the cursor is on. **Animates in** (CSS: opacity 0→1, scale 0.96→1, 180 ms ease-out) and out on submit (120 ms). Thumbnail of the capture on the left (data URL passed in via `js_api`), one text input on the right, placeholder *"Add context… (why is my binary search not working? visualize where it's messing up)"*. **Enter** → `js_api.submit(text)`; **Esc** → `js_api.cancel()`. Input focused on open. **First thing to verify:** transparency + vibrancy actually render on your macOS version; if not, fall back to a solid dark box with 92% opacity and move on (FRD §24).
+`desktop/clarity/spotlight_window.py` + `desktop/clarity/ui/spotlight/{index.html,spotlight.js,spotlight.css}`. `webview.create_window(..., frameless=True, transparent=True, vibrancy=True, on_top=True, width=680, height=96)` centered on the display the cursor is on. **Animates in** (CSS: opacity 0→1, scale 0.96→1, 180 ms ease-out) and out on submit (120 ms). Thumbnail of the capture on the left (data URL passed in via `js_api`), one text input on the right, placeholder *"Add context… (why is my binary search not working? visualize where it's messing up)"*. **Enter** → `js_api.submit(text)`; **Esc** → `js_api.cancel()`. Input focused on open. **First thing to verify:** transparency + vibrancy actually render on your macOS version; if not, fall back to a solid dark box with 92% opacity and move on (FRD §24).
 
 **Step 2 — Result box** (ref: FRD §5, §15.1, §11.2)
-`desktop/avlt/result_window.py` + `desktop/avlt/ui/result/{index.html,result.js,result.css}` + `ui/shared/marked.min.js` (vendored). `webview.create_window(url=…/index.html?job=<id>&server=<url>, width=440, height=680, frameless=True, transparent=True, on_top=True, vibrancy=True, easy_drag=True)`. **Whole box drags** (`easy_drag`), video and text excluded. **X** top-right and **Esc** → `window.close()`. Each job opens a new box offset 24 px; old ones stay until closed. `result.js`: poll every 1 s; status line in plain words; render `explanation` the first time it's non-null; scene progress; `<video controls autoplay muted>` on `video_url`; `done` + null video → quiet note; 404 → "expired"; 180 s → retry button.
+`desktop/clarity/result_window.py` + `desktop/clarity/ui/result/{index.html,result.js,result.css}` + `ui/shared/marked.min.js` (vendored). `webview.create_window(url=…/index.html?job=<id>&server=<url>, width=440, height=680, frameless=True, transparent=True, on_top=True, vibrancy=True, easy_drag=True)`. **Whole box drags** (`easy_drag`), video and text excluded. **X** top-right and **Esc** → `window.close()`. Each job opens a new box offset 24 px; old ones stay until closed. `result.js`: poll every 1 s; status line in plain words; render `explanation` the first time it's non-null; scene progress; `<video controls autoplay muted>` on `video_url`; `done` + null video → quiet note; 404 → "expired"; 180 s → retry button.
 
 **Step 3 — Submit + notification** (ref: FRD §15.1)
-`desktop/avlt/client.py`: `POST /api/jobs` with `source: "desktop"` and the guardrails setting; on `ConnectionError` → `rumps.notification("Can't reach the server", ...)` and the spotlight box stays open. Notification when the explanation first appears.
+`desktop/clarity/client.py`: `POST /api/jobs` with `source: "desktop"` and the guardrails setting; on `ConnectionError` → `rumps.notification("Can't reach the server", ...)` and the spotlight box stays open. Notification when the explanation first appears.
 
 **Step 4 — Point at the real coordinator**
 Switch from the stub to `localhost:8080`. A real capture should now produce a real explanation in the result box.
@@ -286,7 +286,7 @@ Boot-time checks: Atlas ping, `docker info`, S3 `HeadBucket`, agent `/healthz`.
 **Step 2 — Progress** — "Rendering scene 2 of 3…" from `scenes_done`/`scenes_total`; "Joining scenes…" and "Uploading…" for the two new statuses.
 
 **Step 3 — Recents store** (ref: FRD §8, §15.1, §20, §23 rule 21)
-`desktop/avlt/recents.py`: `~/Library/Application Support/AVLT/recents.json` + `recents/<id>.png` + `recents/<id>_thumb.png`. `add(capture, question) → id` is called **before** `POST /api/jobs`; `update(id, job_id=…)`, then `update(id, problem_text=…)`, `update(id, explanation=…)`, `update(id, video_url=…)` from the result box's poll loop via `js_api`. Rolling cap 50 — oldest entry and its files are deleted. `clear()` for the menu item.
+`desktop/clarity/recents.py`: `~/Library/Application Support/Clarity/recents.json` + `recents/<id>.png` + `recents/<id>_thumb.png`. `add(capture, question) → id` is called **before** `POST /api/jobs`; `update(id, job_id=…)`, then `update(id, problem_text=…)`, `update(id, explanation=…)`, `update(id, video_url=…)` from the result box's poll loop via `js_api`. Rolling cap 50 — oldest entry and its files are deleted. `clear()` for the menu item.
 
 **Step 4 — Recents in the spotlight box** (ref: FRD §5, §15.1, §16.5)
 With an empty field, **↓** or `/` expands the box downward into a list (max 8 visible): thumbnail · problem text or "Untitled capture" · relative time · a dot if `video_url` exists. Typing filters by problem text. **Enter** on a recent with a result → close spotlight, open the result box **from local data** (render `explanation`/`video_url` immediately, then one `GET /api/jobs/{id}` — a 404 is fine). **Enter** on a recent without a result, or **Tab** on any → load its screenshot as the current capture; the user types and submits a new job. Menu bar **Recents** item opens the spotlight box with no capture and the list expanded.
@@ -354,8 +354,8 @@ Stop the agent service mid-job → job resolves (`failed` or `done`-without-vide
 
 ### P4 — Build the Installer
 
-**Step 1 — Self-signed cert** (ref: SETUP §11.1). Create `AVLT Dev`.
-**Step 2 — `build_app.sh`** (ref: FRD §15.2) — PyInstaller with hidden imports, `--add-data` for `ui/`, patch `Info.plist` with `LSUIElement`, `codesign -s "AVLT Dev" --deep --force`. `open dist/AVLT.app` → menu bar icon. **Confirm the spotlight box is still translucent inside the bundle** — `pywebview`'s transparency depends on the window server treating the process correctly, and a bundled `.app` behaves differently from `python -m avlt`.
+**Step 1 — Self-signed cert** (ref: SETUP §11.1). Create `Clarity Dev`.
+**Step 2 — `build_app.sh`** (ref: FRD §15.2) — PyInstaller with hidden imports, `--add-data` for `ui/`, patch `Info.plist` with `LSUIElement`, `codesign -s "Clarity Dev" --deep --force`. `open dist/Clarity.app` → menu bar icon. **Confirm the spotlight box is still translucent inside the bundle** — `pywebview`'s transparency depends on the window server treating the process correctly, and a bundled `.app` behaves differently from `python -m clarity`.
 **Step 3 — `build_dmg.sh`** — `create-dmg` with a background and drag-to-Applications layout.
 **Step 4 — Install on a second Mac** — someone who hasn't run from source. Walk the macOS 15 "Open Anyway" path. Grant permissions. Capture. Fix whatever broke. Write `desktop/RELEASE_NOTES.md` from what they hit.
 **Step 5 — Rebuild, reinstall, confirm the permission persisted** (the whole point of the cert).
@@ -367,7 +367,7 @@ Stop the agent service mid-job → job resolves (`failed` or `done`-without-vide
 1. Two machines, same problem, second is `cached: true` in under 1 s.
 2. Guardrails pass rate recorded and ≥ 8/10.
 3. Agent killed mid-job → job resolves cleanly, result box shows the explanation.
-4. `AVLT.dmg` installed on a machine that never ran from source; `⌘⇧E` works there.
+4. `Clarity.dmg` installed on a machine that never ran from source; `⌘⇧E` works there.
 5. Rebuild + reinstall did not re-prompt for Screen Recording.
 6. Merge to `main`. Tag `sprint-4`.
 
@@ -392,7 +392,7 @@ No code changes. README reviewed by someone who didn't write it. Tag `v0.1.0`.
 
 ### Sprint 5 Sync Point
 1. Fresh clone + SETUP.md → full stack running, by someone following the doc.
-2. GitHub Release exists with `AVLT.dmg` attached; installing from it works.
+2. GitHub Release exists with `Clarity.dmg` attached; installing from it works.
 3. Cache is pre-warmed; a cold problem still works end to end.
 4. `main` is tagged `v0.1.0`.
 

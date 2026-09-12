@@ -1,4 +1,4 @@
-# Ambient Visual Learning Tool — REST API Reference
+# Clarity — REST API Reference
 
 **Version:** 1.0
 **Status:** planning — no code yet
