@@ -1,0 +1,232 @@
+"""The result box — the floating window that shows the explanation, then the video.
+
+FRD §15.1 (Result box, Result content rows), P4_DESKTOP Sprint 2 Step 2.
+440×680, frameless, always on top, draggable by its whole background, opens
+where the spotlight box was and offset from any box already open.
+
+The polling lives in `ui/result/result.js`, not here: FRD §15.1 loads the page
+as `index.html?job=&server=` and the page polls `GET /api/jobs/{id}` every
+second itself. This module's job is the window, the X/Esc close that cancels a
+job still running (API.md §2.3), and telling the app when the explanation lands
+so it can post a notification.
+
+Both halves live here: `ResultBox` is what the menu-bar app holds, `run_window`
+is what runs in the child process.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+from typing import Any, Callable
+from urllib.parse import quote
+
+from . import window_host
+from .window_host import Box, WindowProcess
+
+log = logging.getLogger(__name__)
+
+WIDTH = 440
+HEIGHT = 680
+
+# Each job gets its own box, stepped down-right from the last so several stay
+# usable at once (FRD §15.1).
+STACK_OFFSET = 24
+
+
+# --------------------------------------------------------------------------- #
+# App side
+# --------------------------------------------------------------------------- #
+
+
+class ResultBox:
+    """One open result box.
+
+    `on_cancel(job_id)` fires when the user closed the box before the job
+    reached a terminal status — the app answers with `DELETE /api/jobs/{id}`.
+    `on_explanation(job_id)` fires once, the first time the page renders an
+    explanation, so the app can post the notification from FRD §15.1.
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        server_url: str,
+        box: Box,
+        on_cancel: Callable[[str], None] | None = None,
+        on_explanation: Callable[[str], None] | None = None,
+        on_close: Callable[[str], None] | None = None,
+        on_retry: Callable[[str], None] | None = None,
+        local: dict[str, Any] | None = None,
+    ) -> None:
+        self.job_id = job_id
+        self.box = box
+        self._on_cancel = on_cancel
+        self._on_explanation = on_explanation
+        self._on_close = on_close
+        self._on_retry = on_retry
+        self._closed = threading.Event()
+
+        self._proc = WindowProcess(
+            "result",
+            {
+                "box": box.as_dict(),
+                "job_id": job_id,
+                "server_url": server_url,
+                # Sprint 3 reopens a recent by handing its saved fields over
+                # here, so the box can paint before the first poll answers.
+                "local": local or None,
+            },
+            self._handle,
+            name=f"result-{job_id}",
+        )
+
+    def close(self) -> None:
+        self._proc.close()
+
+    @property
+    def alive(self) -> bool:
+        return self._proc.alive
+
+    def _handle(self, event: dict[str, Any]) -> None:
+        kind = event.get("event")
+        if kind == "explanation":
+            if self._on_explanation is not None:
+                self._on_explanation(self.job_id)
+        elif kind == "cancel":
+            # The window is closing on a job that never finished.
+            if self._on_cancel is not None:
+                self._on_cancel(self.job_id)
+        elif kind == "retry":
+            if self._on_retry is not None:
+                self._on_retry(self.job_id)
+        elif kind == "exited":
+            if not self._closed.is_set():
+                self._closed.set()
+                if self._on_close is not None:
+                    self._on_close(self.job_id)
+
+
+def stacked_box(previous: Box | None, anchor: Box | None = None) -> Box:
+    """Where the next result box goes.
+
+    The first one opens at the spotlight box's top-left (`anchor`); each later
+    one steps 24 px down and right from the one before, clamped so a long
+    session can't walk a box off the bottom of the display.
+    """
+    index, screen_w, screen_h = window_host.cursor_screen()
+
+    if previous is not None:
+        base_x, base_y, index = previous.x + STACK_OFFSET, previous.y + STACK_OFFSET, previous.screen_index
+    elif anchor is not None:
+        base_x, base_y, index = anchor.x, anchor.y, anchor.screen_index
+    else:
+        base_x, base_y = (screen_w - WIDTH) // 2, (screen_h - HEIGHT) // 2
+
+    return Box(
+        screen_index=index,
+        x=max(0, min(base_x, screen_w - WIDTH)),
+        y=max(0, min(base_y, screen_h - HEIGHT)),
+        width=WIDTH,
+        height=HEIGHT,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Child side
+# --------------------------------------------------------------------------- #
+
+
+class _JsApi:
+    """What `window.pywebview.api` exposes to ui/result/result.js."""
+
+    def __init__(self, job_id: str) -> None:
+        self.window = None
+        self.job_id = job_id
+        self._explained = False
+
+    def close(self, cancel: bool = False) -> None:
+        """X or Esc. `cancel` is true while the job has no terminal status, and
+        the app turns that into DELETE /api/jobs/{id} (FRD §15.1)."""
+        if cancel:
+            window_host.emit("cancel", job_id=self.job_id)
+        self._destroy()
+
+    def explanation_shown(self) -> None:
+        """First non-null explanation — the app posts a notification."""
+        if not self._explained:
+            self._explained = True
+            window_host.emit("explanation", job_id=self.job_id)
+
+    def retry(self, job_id: str = "") -> None:
+        """Retry after a failed job. A job can't be restarted, so the app
+        submits the same capture again and opens a fresh box (FRD §19)."""
+        window_host.emit("retry", job_id=job_id or self.job_id)
+
+    def update_recent(self, fields: dict[str, Any]) -> None:
+        """Sprint 3: every poll that adds data updates the local recent
+        (FRD §23 rule 21). Logged until `recents.py` exists."""
+        log.debug("update_recent(%s) — not until Sprint 3", sorted((fields or {}).keys()))
+
+    def log(self, message: str) -> None:
+        """So the page can report trouble into the app's terminal."""
+        log.info("page: %s", message)
+
+    def _destroy(self) -> None:
+        if self.window is not None:
+            window_host.close_window(self.window)
+
+
+def run_window(payload: dict[str, Any]) -> None:
+    import webview
+
+    box = Box.from_dict(payload["box"])
+    job_id = str(payload["job_id"])
+    server_url = str(payload["server_url"]).rstrip("/")
+
+    api = _JsApi(job_id)
+    url = "{}?job={}&server={}".format(
+        window_host.ui_url("result", "index.html"),
+        quote(job_id, safe=""),
+        quote(server_url, safe=""),
+    )
+
+    window = webview.create_window(
+        "Clarity",
+        url=url,
+        js_api=api,
+        width=box.width,
+        height=box.height,
+        x=box.x,
+        y=box.y,
+        screen=window_host.child_screen(box.screen_index),
+        frameless=True,
+        easy_drag=True,  # the whole background is the drag handle (FRD §15.1)
+        transparent=True,
+        vibrancy=True,
+        on_top=True,
+        resizable=False,
+        shadow=False,  # the panel draws its own; a system shadow would square
+        focus=True,  # ...off the rounded corners
+        text_select=True,  # the user should be able to copy the explanation
+    )
+    api.window = window
+
+    def on_loaded() -> None:
+        local = payload.get("local")
+        if local:
+            window_host.evaluate(window, f"window.clarityLocal({window_host.js_literal(local)})")
+
+    window.events.loaded += on_loaded
+
+    def on_command(message: dict[str, Any]) -> None:
+        if message.get("cmd") != "close":
+            return
+        # Go through the page so this behaves exactly like the X button —
+        # including cancelling a job that hasn't finished. If the page can't
+        # answer, close the window anyway.
+        if window_host.evaluate(window, "window.clarityClose && window.clarityClose(), true") is None:
+            api._destroy()
+
+    window_host.listen(on_command)
+    window_host.start(webview)

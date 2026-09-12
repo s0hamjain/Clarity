@@ -196,6 +196,9 @@ desktop/
 │   ├── recents.py                  # recents.json + recents/<id>.png + <id>_thumb.png; add() before POST; update() from
 │   │                               #   polls (job_id, problem_text, explanation, video_url); rolling 50; clear()
 │   ├── client.py                   # POST /api/jobs (source="desktop", guardrails); ConnectionError → notification
+│   ├── window_host.py              # One process per window, because rumps and pywebview both need the main thread.
+│   │                               #   Spawn, one-JSON-object-per-line protocol, screen geometry, clean shutdown.
+│   ├── session.py                  # capture → spotlight → POST → result box, shared by app.py and `--once`
 │   ├── spotlight_window.py         # pywebview frameless+transparent+vibrancy 680×96, centered; js_api: submit/cancel/
 │   │                               #   list_recents/pick_recent; expands for the recents list
 │   ├── result_window.py            # pywebview frameless+on_top+vibrancy 440×680; loads ui/result/?job=&server=;

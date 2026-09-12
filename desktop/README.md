@@ -47,9 +47,30 @@ cd desktop
 python3 -m venv .venv && source .venv/bin/activate    # Python 3.12 or 3.13
 pip install -r requirements.txt
 python -m clarity              # menu bar icon appears; ⌘⇧E is live
-python -m clarity --once       # one capture without the hotkey; prints size, exits
+python -m clarity --once       # one capture through the whole flow: spotlight box,
+                               #   submit, result box. Waits until you close it.
+python -m clarity --once --no-ask          # just the capture; prints its size and exits
 python -m clarity --once --save ~/Desktop/cap.png
 ```
+
+`CLARITY_DEBUG=1` turns on debug logging inside the window processes.
+
+### You need a coordinator running
+
+The app talks to one thing: P3's coordinator (`docs/API.md` §2). It needs no
+Atlas, no Docker and no API keys in fake mode, which walks any job through
+every status on a one-second timer with a sample explanation and video:
+
+```sh
+cd ../server
+PORT=8081 FAKE_AGENT=1 FAKE_RENDER=1 go run ./cmd/server
+```
+
+Port 8081 rather than the default 8080 only because something else may already
+have 8080; point the app at it with the **Server…** menu item. In fake mode
+`/healthz` answers `ok: false` — Atlas, Docker, S3 and the agent really are
+absent — so the app logs that on launch instead of raising a notification
+about it, and only reports it when you ask via **Server…**.
 
 **Use Terminal.app, and keep using it.** When running from source, macOS grants Screen Recording and Input Monitoring to the *terminal application* that launched Python, not to Python. Granting in Terminal and then running from iTerm or VS Code's terminal means granting again. After each grant, **quit and reopen the terminal app**.
 
@@ -90,7 +111,40 @@ Cocoa owns the main thread. Close the window itself.
 | `clarity/config.py` | `~/Library/Application Support/Clarity/config.json` |
 | `clarity/hotkey.py` | `pynput` global hotkey, 2 s debounce, worker thread |
 | `clarity/capture.py` | `screencapture -i -x` → Pillow ≤ 1568 px → PNG data URL |
+| `clarity/client.py` | The coordinator: create, poll, cancel, health |
+| `clarity/session.py` | The flow: capture → spotlight → job → result box |
+| `clarity/window_host.py` | One process per window, and the protocol to it |
+| `clarity/spotlight_window.py` | The input box |
+| `clarity/result_window.py` | The output box |
+| `clarity/ui/` | The two windows' HTML, CSS and JS; vendored `marked.min.js` |
 | `assets/` | App icon, menu bar template icons |
 | `scripts/` | `build_app.sh`, `build_dmg.sh` (Sprint 4) |
+
+### Why each window is its own process
+
+`rumps` and `pywebview` both want the macOS main thread — `rumps.App.run()`
+runs the NSApplication loop for the menu bar, and pywebview refuses to start
+anywhere else. They can't share a process, so the app re-runs itself as
+`python -m clarity --window-host {spotlight,result}` per window and talks to it
+over one JSON object per line on stdin/stdout (`clarity/window_host.py`).
+Importing `webview` costs about 50 ms, so the box still appears at once. A
+window that crashes takes nothing with it, and in the `.app` bundle the same
+trick works because `sys.executable` *is* the entry point.
+
+Three things this cost us, all handled in `window_host.py`, all worth knowing
+before touching that file:
+
+- **A closed window doesn't end the process.** pywebview closes the NSWindow
+  and calls `NSApplication.stop_()`, but AppKit only acts on that when the run
+  loop handles its next event. A window the user clicked closed has one; a
+  window closed by the app has none, and the process would linger with nothing
+  on screen. `close_window()` posts a no-op event to wake the loop and exits
+  outright if that somehow doesn't unwind it.
+- **Stdout is the protocol.** Never `print` in a window process. Logs go to
+  stderr, which is inherited and shows up next to the app's own.
+- **The pages' CSP needs `'unsafe-eval'`.** `window.evaluate_js()` runs a
+  string, so the host can't talk to the page without it. Everything else stays
+  `'self'`, which is what keeps rule 20 true — no script, style or image in
+  `ui/` comes from the network.
 
 Sprint plan and the API this app consumes: [docs/P4_DESKTOP.md](../docs/P4_DESKTOP.md), [docs/API.md §2](../docs/API.md#2-coordinator-api).

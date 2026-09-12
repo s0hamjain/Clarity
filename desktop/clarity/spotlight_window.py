@@ -133,10 +133,7 @@ class _JsApi:
 
     def _destroy(self) -> None:
         if self.window is not None:
-            try:
-                self.window.destroy()
-            except Exception:  # noqa: BLE001 — already gone
-                pass
+            window_host.close_window(self.window)
 
 
 def run_window(payload: dict[str, Any]) -> None:

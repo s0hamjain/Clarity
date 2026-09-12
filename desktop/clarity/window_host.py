@@ -300,6 +300,7 @@ def listen(handler: Callable[[dict[str, Any]], None]) -> None:
                 continue
             if not isinstance(message, dict):
                 continue
+            log.debug("command %s", message.get("cmd"))
             try:
                 handler(message)
             except Exception:  # noqa: BLE001
@@ -333,6 +334,45 @@ def evaluate(window, script: str) -> Any:
         return None
 
 
+def close_window(window) -> None:
+    """Destroy the window and make sure the process actually goes away.
+
+    pywebview closes the NSWindow and calls `NSApplication.stop_()`, but AppKit
+    only acts on `stop_` when the run loop handles its *next* event. A window
+    the user clicked closed has that event; one closed on our own say-so — the
+    app accepted a submit, the user quit, the pipe closed — has none, and the
+    process would sit there with no window. So: ask AppKit to close, wake the
+    loop with a no-op event, and if the loop still hasn't unwound shortly after,
+    leave anyway. The only state a window host owns is its window.
+    """
+    try:
+        window.destroy()
+    except Exception:  # noqa: BLE001 — already gone
+        log.debug("destroy failed; exiting anyway", exc_info=True)
+
+    try:
+        import AppKit
+
+        wake = AppKit.NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            AppKit.NSEventTypeApplicationDefined,
+            AppKit.NSMakePoint(0, 0),
+            0,
+            0,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
+        AppKit.NSApplication.sharedApplication().postEvent_atStart_(wake, True)
+    except Exception:  # noqa: BLE001
+        log.debug("could not wake the event loop", exc_info=True)
+
+    bail = threading.Timer(1.5, lambda: os._exit(0))
+    bail.daemon = True
+    bail.start()
+
+
 def start(webview) -> None:
     """Run the window, first hiding the host process from the Dock.
 
@@ -363,7 +403,7 @@ def run(kind: str) -> int:
     Logs go to stderr so stdout stays clean for the protocol.
     """
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if os.environ.get("CLARITY_DEBUG") else logging.INFO,
         stream=sys.stderr,
         format=f"%(asctime)s %(levelname)-7s {kind}-window: %(message)s",
         datefmt="%H:%M:%S",
