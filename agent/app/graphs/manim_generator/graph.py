@@ -17,15 +17,16 @@ def check_lint(state: SceneState) -> str:
     if state.traceback is None:
         return "render"
 
-    if state.lint_retries < 2:
-        logger.info(f"Lint failed. Triggering lint retry #{state.lint_retries}. Reason: {state.traceback}")
-        return "generate"
-    else:
-        logger.warning(f"Exceeded max lint retries ({state.lint_retries}). Counting as render attempt and re-retrieving.")
-        if state.attempts < 3:
-            return "retrieve"
-        else:
-            return END
+    if state.attempts >= 3:
+        logger.warning(f"Exceeded max total attempts ({state.attempts}/3). Terminating graph.")
+        return END
+
+    if state.lint_retries == 0:
+        logger.info(f"Max lint retries reached. Triggering re-retrieval for attempt #{state.attempts + 1}.")
+        return "retrieve"
+
+    logger.info(f"Lint failed. Triggering lint retry #{state.lint_retries}. Reason: {state.traceback}")
+    return "generate"
 
 
 def check_render(state: SceneState) -> str:

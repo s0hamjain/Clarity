@@ -83,11 +83,22 @@ def lint_node(state: SceneState) -> dict:
     """Statically lints generated Manim source code using AST."""
     reason = lint_manim_code(state.source or "")
     if reason:
-        logger.info(f"Lint failed (retry {state.lint_retries + 1}): {reason}")
-        return {
-            "traceback": f"Lint Error: {reason}",
-            "lint_retries": state.lint_retries + 1,
-        }
+        if state.lint_retries >= 1:
+            logger.warning(
+                f"Exceeded max lint retries ({state.lint_retries + 1}). "
+                f"Counting as render attempt #{state.attempts + 1} and resetting lint_retries."
+            )
+            return {
+                "traceback": f"Lint Error: {reason}",
+                "lint_retries": 0,
+                "attempts": state.attempts + 1,
+            }
+        else:
+            logger.info(f"Lint failed (retry {state.lint_retries + 1}): {reason}")
+            return {
+                "traceback": f"Lint Error: {reason}",
+                "lint_retries": state.lint_retries + 1,
+            }
     else:
         return {"traceback": None}
 
