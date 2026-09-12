@@ -171,7 +171,7 @@ Debugging and pre-warming checks. Not called by the desktop app.
 
 ## 3. Agent Service API
 
-Internal. Only the coordinator calls it. Every response body is schema-enforced JSON — no prose, no fences. Models: `/vision` → Gemini 3.8 Flash at `temperature=0`; `/explain` → Claude Opus 5; `/codegen` → Claude Sonnet 5. Every request carries `guardrails`.
+Internal. Only the coordinator calls it. Every response body is schema-enforced JSON — no prose, no fences. Models: `/vision` → Gemini 3.8 Flash at `temperature=0`; `/explain` → Gemini 3.8 Flash; `/codegen` → Claude Sonnet 5. Every request carries `guardrails`.
 
 ### 3.1 `POST /vision` — transcribe a screenshot
 
@@ -307,7 +307,7 @@ Any subset of `title`, `description`, `category`, `tags`, `verified`. Changing `
 ### 3.10 `GET /healthz`
 
 ```json
-{ "ok": true, "gemini": true, "anthropic": true, "voyage": true, "atlas": true, "snippets_verified": 42, "models": { "vision": "gemini-3.8-flash", "explain": "claude-opus-5", "codegen": "claude-sonnet-5", "embed": "voyage-code-3" }, "version": "0.1.0" }
+{ "ok": true, "gemini": true, "anthropic": true, "voyage": true, "atlas": true, "snippets_verified": 42, "models": { "vision": "gemini-3.8-flash", "explain": "gemini-3.8-flash", "codegen": "claude-sonnet-5", "embed": "voyage-code-3" }, "version": "0.1.0" }
 ```
 
 ---
@@ -410,7 +410,8 @@ Desktop                Coordinator                    Agent                     
 | Coordinator → `/snippets/search` | 10 s | Coordinator client |
 | Coordinator → `/codegen` | 90 s | Coordinator client |
 | Agent → Gemini (`/vision`) | 20 s, 1 retry on 5xx/429 | Agent |
-| Agent → Anthropic (`/explain`, `/codegen`) | 60 s per call, 1 retry on 5xx/429 | Agent |
+| Agent → Gemini (`/explain`) | 40 s, 1 retry on 5xx/429 | Agent |
+| Agent → Anthropic (`/codegen`) | 60 s per call, 1 retry on 5xx/429 | Agent |
 | Agent → Voyage | 10 s, 1 retry | Agent |
 | Per-scene container | 120 s | Coordinator, `docker kill` |
 | Repair attempts per scene | 3 | Coordinator |

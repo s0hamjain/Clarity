@@ -19,7 +19,7 @@ If you haven't read [README.md](README.md) yet — especially the glossary — d
 1. The desktop app takes the screenshot and sends it (plus your text) to the **coordinator**, a Go server on your Mac. The coordinator creates a **job** and replies instantly with a job ID. The desktop app starts polling that job once a second.
 2. The coordinator asks the **agent service** (Python, the only thing that talks to any AI model) to read the problem off the screenshot, word for word — that's **Gemini**, at `temperature=0` so the same problem always transcribes the same way.
 3. The coordinator fingerprints that text. If the same problem has been asked before, it returns the stored explanation and video — done in under a second.
-4. Otherwise it asks the agent service (**Claude Opus 5**) for a written explanation and a **storyboard**: 2–5 short scenes describing what the animation should show. **The explanation is saved the instant it arrives, and the result box shows it.** This is the moment the user stops waiting.
+4. Otherwise it asks the agent service (**Gemini**, again) for a written explanation and a **storyboard**: 2–5 short scenes describing what the animation should show. **The explanation is saved the instant it arrives, and the result box shows it.** This is the moment the user stops waiting.
 5. For each scene, in parallel: the agent service finds the 3 most similar verified **snippets** from the example library (vector search in MongoDB Atlas), writes Manim code imitating them (**Claude Sonnet 5**), and the **render pipeline** runs that code inside a locked-down Docker container. If the code crashes, the error goes back to the model and it tries again, up to 3 times. A scene that never works is dropped; the others carry on.
 6. Finished scenes are stitched into one video (no re-encoding), uploaded to S3, and the job is marked done. The result box plays it. Successful code is saved back into the library as an unverified example for a human to review.
 
@@ -31,11 +31,11 @@ If rendering fails entirely, the job still finishes: the explanation stays on sc
 |---|---|---|
 | Desktop app | Python — `rumps` (menu bar), `pynput` (hotkey), `pywebview` (the two floating windows), PyInstaller → `.dmg` | Everything the user sees and installs |
 | Coordinator | Go, `net/http` | Job lifecycle, cache, calling the other parts in order, fanning scenes out in parallel |
-| Agent service | Python, FastAPI, `google-genai` + `anthropic` SDKs | Every model call: transcription (Gemini), explanation (Opus 5), code + repair (Sonnet 5); plus the snippet library |
+| Agent service | Python, FastAPI, `google-genai` + `anthropic` SDKs | Every model call: transcription and explanation (Gemini Flash), code + repair (Claude Sonnet 5); plus the snippet library |
 | Render pipeline | Go + Docker + ffmpeg | Manim code → sandboxed render → repair loop → stitched MP4 on S3 |
 | MongoDB Atlas | Free M0 cluster | Jobs, cache, and the snippet library (with a vector-search index) |
-| Gemini 3.8 Flash | Google Gemini API | Reads the screenshot (OCR), `temperature=0` |
-| Claude Opus 5 · Claude Sonnet 5 | Anthropic API | Explanation · Manim code and repair |
+| Gemini 3.8 Flash | Google Gemini API | Reads the screenshot (OCR, `temperature=0`) and writes the explanation + storyboard |
+| Claude Sonnet 5 | Anthropic API | Manim code and repair — the one place a code-specialist model earns its cost |
 | Voyage AI | `voyage-code-3` | Turns text into embeddings for vector search |
 | S3 (MinIO locally) | | Finished videos |
 
@@ -45,7 +45,7 @@ Four people, four roles, four directories, no overlap:
 
 | Role | Person | Directory | One sentence |
 |---|---|---|---|
-| AI | P1 | `agent/` | Make the models produce correct JSON: transcription (Gemini), explanation (Opus 5), code + repair (Sonnet 5). |
+| AI | P1 | `agent/` | Make the models produce correct JSON: transcription + explanation (Gemini), code + repair (Sonnet 5). |
 | Render | P2 | `docker/`, `samples/`, `server/internal/render/` | Turn Manim code into an MP4 on S3, safely; write the verified example scenes. |
 | Backend | P3 | `server/` (rest), `release/` | Run the job: API, database, call P1 and P2 in order, report status. Ship the release. |
 | Desktop | P4 | `desktop/` | Everything the user sees; the `.app` and `.dmg`. |
@@ -122,7 +122,7 @@ From FRD §23. Violations cause silent cache poisoning, hung jobs, broken concat
 3. `/codegen` asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)` before returning.
 4. Retrieval filters on `verified: true` in every code path. No flag disables it.
 5. Index and query use the same `EMBED_MODEL`. Changing it means re-running the seed script against a recreated index.
-6. `/vision` is Gemini 3.8 Flash at `temperature=0`. `/explain` is Claude Opus 5. `/codegen` is Claude Sonnet 5 via `client.messages.stream()`.
+6. `/vision` and `/explain` are Gemini 3.8 Flash (`/vision` at `temperature=0`). `/codegen` is Claude Sonnet 5 via `client.messages.stream()`. **No Opus-tier models anywhere** — Flash by default, Sonnet only where code quality justifies it.
 
 ### Coordinator (P3)
 7. `POST /api/jobs` writes the job and returns. Everything else runs in a goroutine with `defer recover()`.

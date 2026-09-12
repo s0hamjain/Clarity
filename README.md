@@ -44,10 +44,10 @@ Two ideas drive the whole design:
 |---|---|---|---|
 | **Desktop app** | The menu-bar app: hotkey, screenshot, the floating input box, the result window, the `.app`/`.dmg` build | Python | P4 |
 | **Coordinator** | The server the desktop app talks to. Tracks each request ("job") through its steps, checks the cache, calls the other two parts in order. Also owns the release (`.pkg`, GitHub Release) | Go | P3 |
-| **Agent service** | The only part that talks to AI models. Reads the screenshot (Google Gemini), writes the explanation (Claude Opus 5), writes the Manim code and fixes it when it breaks (Claude Sonnet 5) | Python | P1 |
+| **Agent service** | The only part that talks to AI models. Reads the screenshot and writes the explanation (Google Gemini Flash), writes the Manim code and fixes it when it breaks (Claude Sonnet 5) | Python | P1 |
 | **Render pipeline** | Turns Manim code into an MP4 safely: runs it inside a locked-down Docker container, retries on failure, stitches scenes, uploads the video | Go + Docker | P2 |
 
-Supporting services: **MongoDB Atlas** (stores jobs, the cache, and a library of verified Manim examples the AI learns from), **S3 / MinIO** (stores finished videos), **Google Gemini** (reads the screenshot), **Claude** (explanation and code), **Voyage AI** (turns text into vectors so we can search the example library by meaning).
+Supporting services: **MongoDB Atlas** (stores jobs, the cache, and a library of verified Manim examples the AI learns from), **S3 / MinIO** (stores finished videos), **Google Gemini** (reads the screenshot, writes the explanation), **Claude Sonnet** (writes the Manim code), **Voyage AI** (turns text into vectors so we can search the example library by meaning).
 
 ---
 
@@ -82,7 +82,7 @@ Words the docs use as if you already know them.
 | **Result box** | The translucent floating window that shows the explanation and then the video. You can drag it anywhere and close it with X. |
 | **Recents** | The last 50 screenshots you've taken, stored on your Mac. The spotlight box can list them so you can ask a new question about an old screenshot. |
 | **Coordinator** | The Go server. Called that because it doesn't do any AI or rendering itself — it coordinates the parts that do. |
-| **Agent service** | The Python server that makes every AI call — Gemini to read the screenshot, Claude to explain and to write code. |
+| **Agent service** | The Python server that makes every AI call — Gemini to read the screenshot and explain it, Claude Sonnet to write the Manim code. |
 | **Storyboard** | The plan for the animation: 2–5 **scenes**, each with a line of on-screen text (**narration**) and a description of what to show (**visual**). Written by the model before any code. |
 | **Scene** | One self-contained Manim animation, 5–15 seconds. Each scene is rendered in its own container, in parallel with the others, then they're stitched together. |
 | **Snippet** / **snippet corpus** | A short, verified, working Manim example stored in MongoDB. Before writing code for a scene, the system finds the 3 most similar snippets and shows them to the model as examples to imitate. This is **RAG** — retrieval-augmented generation. |

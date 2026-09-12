@@ -19,7 +19,7 @@ If a word here is unfamiliar, the [README glossary](../README.md#glossary) defin
 |---|---|
 | **Job** | One request from screenshot to video, with an ID and a status that advances through fixed steps (§11.2). |
 | **Coordinator** | The Go server the desktop app talks to. Orchestrates; does no AI or rendering itself (§11). |
-| **Agent service** | The Python server that makes every AI call — Gemini reads the screenshot, Claude explains and writes code (§10). |
+| **Agent service** | The Python server that makes every AI call — Gemini reads the screenshot and writes the explanation, Claude Sonnet writes the Manim code (§10). |
 | **Storyboard / scene** | The model's plan for the animation: 2–5 scenes, each rendered separately then stitched (§10.2, §14). |
 | **Snippet corpus** | Verified working Manim examples in MongoDB; the 3 most similar are shown to the model before it writes code. This is the RAG part (§13). |
 | **Cache key** | The fingerprint of a problem; same fingerprint means reuse the existing video (§12). |
@@ -135,8 +135,8 @@ Coordinator (Go)
 Agent service (Python, FastAPI)           ├──► Docker          one manim-worker container per scene
   /vision  /explain  /snippets  /codegen  ├──► ffmpeg          concat, stream copy
         │                                 └──► S3 / MinIO      finished MP4s, served directly
-        ├──► Google Gemini API (vision / OCR)
-        ├──► Claude API (explanation: Opus 5 · code: Sonnet 5)
+        ├──► Google Gemini API (OCR + explanation)
+        ├──► Claude API (Sonnet 5 — Manim code only)
         ├──► Voyage AI (embeddings)
         └──► MongoDB Atlas Vector Search   manim_snippets corpus (RAG)
 ```
@@ -158,7 +158,7 @@ Two decisions shape everything downstream:
 | Coordinator | Go 1.22+ · `net/http` · `mongo-driver/v2` · AWS SDK v2 | Public API, job orchestration, cache, render dispatch |
 | Agent service | Python 3.12 · FastAPI · `anthropic` · `voyageai` · `pymongo` | All model calls, embeddings, retrieval, corpus ingest |
 | OCR / vision | Google Gemini 3.8 Flash (`gemini-3.8-flash`) via `google-genai` | Reads the problem off the screenshot, verbatim. `temperature=0` for deterministic transcription. |
-| Explanation | Claude Opus 5 (`claude-opus-5`) | Written explanation + storyboard |
+| Explanation | Google Gemini 3.8 Flash (`gemini-3.8-flash`) | Written explanation + storyboard |
 | Code generation | Claude Sonnet 5 (`claude-sonnet-5`) | Manim source and repair |
 | Embeddings | Voyage AI `voyage-code-3` (1024 dims) | Embeds snippet corpus and scene queries |
 | Database | MongoDB Atlas (M0 free tier) | `jobs`, `cache`, `manim_snippets` collections; Atlas Vector Search index |
@@ -383,11 +383,13 @@ Generated snippets land with `verified: false` and are **excluded from retrieval
 | Endpoint | Model | Settings |
 |---|---|---|
 | `/vision` | **Gemini 3.8 Flash** `gemini-3.8-flash` | `temperature=0`, thinking `low`, JSON schema response. Image as an inline `Part` (`mime_type="image/png"`). |
-| `/explain` | **Claude Opus 5** `claude-opus-5` | Adaptive thinking (default). Structured outputs. |
+| `/explain` | **Gemini 3.8 Flash** `gemini-3.8-flash` | Default temperature, thinking `medium`, JSON schema response. |
 | `/codegen` (generate and repair) | **Claude Sonnet 5** `claude-sonnet-5` | Adaptive thinking. Structured outputs. `client.messages.stream()` — output is long. |
 | Embeddings | Voyage `voyage-code-3` | See §13. |
 
-Claude rules: structured outputs for every response; no assistant prefill (400 on Opus 5 / Sonnet 5); never pass `temperature` (400 on both). Gemini rules: always `temperature=0` and a `response_schema`; parse the JSON, never regex it.
+**Cost policy:** no Opus-tier models anywhere. Gemini Flash is the default for everything; Claude Sonnet is used only for `/codegen`, where code quality measurably reduces repair attempts. If a cheaper model does the job in an ablation, switch to it.
+
+Claude rules: structured outputs for every response; no assistant prefill (400 on Sonnet 5); never pass `temperature` (400). Gemini rules: always a `response_schema`; `temperature=0` on `/vision`; parse the JSON, never regex it.
 
 ---
 
@@ -734,17 +736,14 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 ### `agent/.env`
 | Var | Example | Purpose |
 |---|---|---|
-| `GEMINI_API_KEY` | `AIza…` | Gemini — `/vision` |
-| `ANTHROPIC_API_KEY` | `sk-ant-…` | Claude — `/explain` (Opus 5), `/codegen` (Sonnet 5) |
+| `GEMINI_API_KEY` | `AIza…` | Gemini — `/vision`, `/explain` |
+| `ANTHROPIC_API_KEY` | `sk-ant-…` | Claude — `/codegen` (Sonnet 5) |
 | `VOYAGE_API_KEY` | `pa-…` | Embeddings |
 | `MONGODB_URI` | `mongodb+srv://…/clarity` | Atlas |
 | `MONGODB_DB` | `clarity` | Database name |
 | `EMBED_MODEL` | `voyage-code-3` | Must match the vector index dims |
 | `VISION_MODEL` | `gemini-3.8-flash` | |
-| `EXPLAIN_MODEL` | `claude-opus-5` | |
-| `CODEGEN_MODEL` | `claude-sonnet-5` | |
-| `VISION_MODEL` | `gemini-3.8-flash` | |
-| `EXPLAIN_MODEL` | `claude-opus-5` | |
+| `EXPLAIN_MODEL` | `gemini-3.8-flash` | |
 | `CODEGEN_MODEL` | `claude-sonnet-5` | |
 
 ### `server/.env`
@@ -778,7 +777,7 @@ Upload to `s3://<RENDER_BUCKET>/renders/<hash>.mp4`, public-read on the prefix. 
 3. `scene_class` is asserted equal to `"GeneratedScene"` before returning from `/codegen`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
 5. Index and query use the same `EMBED_MODEL`. Changing it means re-running the seed script.
-6. `/vision` is Gemini at `temperature=0`. `/explain` is Opus 5, `/codegen` is Sonnet 5 via `client.messages.stream()`; never assistant prefill, never `temperature` on Claude.
+6. `/vision` and `/explain` are Gemini 3.8 Flash (`/vision` at `temperature=0`). `/codegen` is Sonnet 5 via `client.messages.stream()`; never assistant prefill, never `temperature` on Claude. No Opus-tier models.
 
 ### Coordinator
 7. `POST /api/jobs` writes the job and returns. Everything else is in a goroutine with `defer recover()`.

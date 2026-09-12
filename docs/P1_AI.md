@@ -1,14 +1,16 @@
 # Clarity — P1: AI (Agent Service)
 
-**You are P1. Your job in one sentence:** build the Python service that makes every call to an AI model and returns exact JSON — read the problem off a screenshot (Gemini), write the explanation and animation plan (Claude Opus 5), find example code, write the Manim code and fix it when it crashes (Claude Sonnet 5).
+**You are P1. Your job in one sentence:** build the Python service that makes every call to an AI model and returns exact JSON — read the problem off a screenshot and write the explanation and animation plan (Gemini Flash), find example code, write the Manim code and fix it when it crashes (Claude Sonnet 5).
 
 You are the only person who talks to any AI model. Nobody else writes a prompt. Nobody else imports `google.genai` or `anthropic`.
 
 | Task | Model | Why |
 |---|---|---|
 | `/vision` — OCR the screenshot | **Gemini 3.8 Flash** `gemini-3.8-flash` | Strong vision, fast, cheap, and accepts `temperature=0` — which the cache needs |
-| `/explain` — explanation + storyboard | **Claude Opus 5** `claude-opus-5` | Best reasoning for the part the user reads |
-| `/codegen` — Manim code + repair | **Claude Sonnet 5** `claude-sonnet-5` | Strong at code, faster and cheaper than Opus for 2–5 calls per job plus repairs |
+| `/explain` — explanation + storyboard | **Gemini 3.8 Flash** `gemini-3.8-flash` | Good enough reasoning at a fraction of the cost; one call per job |
+| `/codegen` — Manim code + repair | **Claude Sonnet 5** `claude-sonnet-5` | The one place a code-specialist model earns its cost: 2–5 calls per job plus repairs, and every failed render costs 90 s of CPU |
+
+**Cost policy: no Opus-tier models, anywhere.** Gemini Flash by default. If the Sprint 3 ablation shows Gemini writes Manim as well as Sonnet, switch `/codegen` too.
 
 ---
 
@@ -84,8 +86,8 @@ agent/
 │   ├── main.py                 # FastAPI app, routers, /healthz
 │   ├── config.py               # pydantic-settings reading .env
 │   ├── schemas.py              # Pydantic models = API.md §3 shapes, exactly
-│   ├── clients/gemini.py       # google-genai client; temperature=0 + response_schema helper for /vision
-│   ├── clients/claude.py       # anthropic.Anthropic(); structured helper (Opus 5); stream helper (Sonnet 5)
+│   ├── clients/gemini.py       # google-genai client; response_schema helper — /vision (temperature=0) and /explain
+│   ├── clients/claude.py       # anthropic.Anthropic(); stream helper (Sonnet 5, /codegen only)
 │   ├── clients/embed.py        # voyageai embed(texts, model, input_type)
 │   ├── clients/atlas.py        # pymongo client, collection handles, $vectorSearch helper
 │   ├── routers/vision.py
@@ -117,13 +119,13 @@ agent/
 
 ### Step 1 — Skeleton (45 min)
 - `app/main.py`: FastAPI app. Mount routers. No CORS (only the coordinator calls you).
-- `app/config.py`: `pydantic_settings.BaseSettings` with `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, `MONGODB_DB="clarity"`, `EMBED_MODEL="voyage-code-3"`, `VISION_MODEL="gemini-3.8-flash"`, `EXPLAIN_MODEL="claude-opus-5"`, `CODEGEN_MODEL="claude-sonnet-5"`; plus `GEMINI_API_KEY`.
+- `app/config.py`: `pydantic_settings.BaseSettings` with `ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `MONGODB_URI`, `MONGODB_DB="clarity"`, `EMBED_MODEL="voyage-code-3"`, `VISION_MODEL="gemini-3.8-flash"`, `EXPLAIN_MODEL="gemini-3.8-flash"`, `CODEGEN_MODEL="claude-sonnet-5"`; plus `GEMINI_API_KEY`.
 - `app/schemas.py`: one Pydantic model per request and response in **API.md §3**. Field names exact. These *are* the contract.
 - Every endpoint returns a valid hardcoded response so P3 can hit you today.
 
 ### Step 2 — Clients (1 h)
-- `clients/gemini.py`: one `genai.Client()` (reads `GEMINI_API_KEY`). A helper `vision(image_bytes, mime_type, prompt, schema_model)` that calls `client.models.generate_content(model=VISION_MODEL, contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt], config=types.GenerateContentConfig(temperature=0, response_mime_type="application/json", response_schema=schema_model, thinking_config=types.ThinkingConfig(thinking_level="low")))` and returns `schema_model.model_validate_json(response.text)`. **Always `temperature=0`** — that's the whole reason Gemini has this job.
-- `clients/claude.py`: one `anthropic.Anthropic()`. `structured(model, prompt, schema_model)` calls `messages.create` with `output_config={"format": ...}` built from the Pydantic model's JSON schema and returns the parsed model — used with `EXPLAIN_MODEL` (Opus 5). `structured_stream(model, ...)` uses `messages.stream()` + `get_final_message()` for long outputs — used with `CODEGEN_MODEL` (Sonnet 5). **Never** pass `temperature`; **never** use assistant prefill — both are 400s on Opus 5 and Sonnet 5.
+- `clients/gemini.py`: one `genai.Client()` (reads `GEMINI_API_KEY`). One helper `generate(model, contents, schema_model, temperature=None, thinking_level="medium")` that calls `client.models.generate_content(model=model, contents=contents, config=types.GenerateContentConfig(temperature=temperature, response_mime_type="application/json", response_schema=schema_model, thinking_config=types.ThinkingConfig(thinking_level=thinking_level)))` and returns `schema_model.model_validate_json(response.text)`. `/vision` calls it with `[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt]`, `temperature=0`, `thinking_level="low"`. `/explain` calls it with the text prompt, default temperature, `thinking_level="medium"`.
+- `clients/claude.py`: one `anthropic.Anthropic()`. `structured_stream(model, prompt, schema_model)` uses `messages.stream()` + `get_final_message()` with `output_config={"format": ...}` built from the Pydantic model's JSON schema — used with `CODEGEN_MODEL` (Sonnet 5) only. **Never** pass `temperature`; **never** use assistant prefill — both are 400s on Sonnet 5.
 - `clients/embed.py`: `voyageai.Client().embed(texts, model=EMBED_MODEL, input_type="document"|"query").embeddings`.
 - `clients/atlas.py`: `MongoClient(MONGODB_URI)[MONGODB_DB]`; handles for `manim_snippets`.
 - `/healthz`: ping all four (Gemini, Anthropic, Voyage, Atlas); report `snippets_verified` = count of `{verified: true}` and the four model IDs.
@@ -151,9 +153,10 @@ agent/
 
 **Goal:** a real explanation and storyboard come back; the library is seeded from P2's samples and searchable by meaning.
 
-### Step 1 — `/explain` on Claude Opus 5 (1.5 h)
+### Step 1 — `/explain` on Gemini 3.8 Flash (1.5 h)
+- `EXPLAIN_MODEL` = `gemini-3.8-flash` via `gemini.generate(...)`, `response_schema=ExplainResponse`, thinking `medium`.
 - Prompts: `explain_math.md`, `explain_algorithm.md`, chosen by `category`. When `guardrails: true`, append `explain_guardrails.md`: teach the method, work the setup, **stop before the final answer** (math: leave the final substitution; code: give a skeleton with decision points named, never a complete solution).
-- Structured output = `ExplainResponse`. 2–5 scenes. `narration` ≤ 90 chars. `visual` in relative terms ("below", "next to"), never coordinates.
+- 2–5 scenes. `narration` ≤ 90 chars. `visual` in relative terms ("below", "next to"), never coordinates.
 - The storyboard rule, in the prompt as a rule *and* as a bad/good example pair: **every scene must show something text can't** — a function and its derivative plotted together, a pointer walking an array, a shape transforming. A scene that just restates algebra gets cut.
 
 ### Step 2 — Seed script + vector index (1 h)
@@ -260,13 +263,14 @@ Full protocol: [WORK_SPLIT.md → Merge Protocol](WORK_SPLIT.md#merge-protocol).
 3. `/codegen` asserts `scene_class == "GeneratedScene"` and that the source contains `class GeneratedScene(Scene)`.
 4. Retrieval filters on `verified: true` in every code path. No debug flag disables it.
 5. Index and query use the same `EMBED_MODEL`. Changing it means recreating the index and re-seeding.
-6. `/vision` is Gemini at `temperature=0`. `/explain` is Opus 5. `/codegen` is Sonnet 5 via streaming. Model IDs come from config, never hardcoded in a router.
+6. `/vision` and `/explain` are Gemini 3.8 Flash (`/vision` at `temperature=0`). `/codegen` is Sonnet 5 via streaming. Model IDs come from config, never hardcoded in a router. **Never an Opus-tier model.**
 
 ---
 
 ## Decisions that are yours
 
 - **Transcription prompt** — how verbatim is verbatim (line breaks, LaTeX vs Unicode math). Sprint 2 Step 5.
+- **Whether Sonnet stays on `/codegen`** — if the Sprint 3 ablation shows Gemini Flash renders first-try as often, drop Sonnet and the Anthropic dependency entirely.
 - **Embedding model** — `voyage-code-3` is the default; if prose-to-prose matching looks weak in Sprint 2, try `voyage-3.5` *before* the corpus is large (re-embedding is cheap now, expensive later).
 - **What "teach the method, not the answer" means** in the guardrails prompt.
 - **Storyboard bias** — the bad/good example pairs in `explain_*.md` that push toward motion over algebra.

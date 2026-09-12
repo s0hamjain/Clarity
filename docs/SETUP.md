@@ -105,8 +105,8 @@ Two model providers. Everyone needs both keys — you'll run the full stack loca
 
 | Provider | Used for | Model |
 |---|---|---|
-| **Google Gemini** | Reading the problem off the screenshot (`/vision`) | `gemini-3.8-flash` |
-| **Anthropic Claude** | Explanation (`/explain`) and Manim code (`/codegen`) | `claude-opus-5`, `claude-sonnet-5` |
+| **Google Gemini** | Reading the problem off the screenshot (`/vision`) and writing the explanation (`/explain`) | `gemini-3.8-flash` |
+| **Anthropic Claude** | Manim code and repair (`/codegen`) | `claude-sonnet-5` |
 
 ### 3.1 Gemini
 1. Go to https://aistudio.google.com → **Get API key** → Create.
@@ -401,7 +401,7 @@ MONGODB_URI=mongodb+srv://clarity:<password>@clarity.xxxxx.mongodb.net/clarity
 MONGODB_DB=clarity
 EMBED_MODEL=voyage-code-3
 VISION_MODEL=gemini-3.8-flash
-EXPLAIN_MODEL=claude-opus-5
+EXPLAIN_MODEL=gemini-3.8-flash
 CODEGEN_MODEL=claude-sonnet-5
 ```
 

@@ -69,18 +69,18 @@ agent/
 │   ├── __init__.py
 │   ├── main.py                     # FastAPI app; mounts routers; /healthz pings Anthropic, Voyage, Atlas
 │   ├── config.py                   # pydantic-settings: GEMINI_API_KEY, ANTHROPIC_API_KEY, VOYAGE_API_KEY, MONGODB_URI, MONGODB_DB,
-│   │                               #   EMBED_MODEL, VISION_MODEL (gemini-3.8-flash), EXPLAIN_MODEL (claude-opus-5), CODEGEN_MODEL (claude-sonnet-5)
+│   │                               #   EMBED_MODEL, VISION_MODEL (gemini-3.8-flash), EXPLAIN_MODEL (gemini-3.8-flash), CODEGEN_MODEL (claude-sonnet-5)
 │   ├── schemas.py                  # Pydantic models = FRD §10 shapes, exactly. These are the contract.
 │   │
 │   ├── clients/
-│   │   ├── gemini.py               # google-genai client; temperature=0 + response_schema helper — /vision only
-│   │   ├── claude.py               # One anthropic.Anthropic(); structured helper (Opus 5, /explain); stream helper (Sonnet 5, /codegen)
+│   │   ├── gemini.py               # google-genai client; response_schema helper — /vision (temperature=0) and /explain
+│   │   ├── claude.py               # One anthropic.Anthropic(); stream helper (Sonnet 5, /codegen only)
 │   │   ├── embed.py                # voyageai.Client().embed(...) with input_type document|query
 │   │   └── atlas.py                # pymongo client; collection handles; $vectorSearch helper
 │   │
 │   ├── routers/
 │   │   ├── vision.py               # POST /vision      — Gemini 3.8 Flash, temperature=0, verbatim transcription
-│   │   ├── explain.py              # POST /explain     — explanation + 2–5 scene storyboard; guardrails variant
+│   │   ├── explain.py              # POST /explain     — Gemini 3.8 Flash; explanation + 2–5 scene storyboard; guardrails variant
 │   │   ├── snippets.py             # POST /snippets/search, POST /snippets/ingest
 │   │   └── codegen.py              # POST /codegen     — Claude Sonnet 5; with snippets; repair when previous_source+traceback present
 │   │
