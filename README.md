@@ -76,4 +76,28 @@ Supporting services:
 
 The desktop app needs the coordinator and agent service running somewhere it can reach (`http://localhost:8080` by default). For running those yourself — dependencies, API keys, MongoDB Atlas, Docker — see [docs/SETUP.md](docs/SETUP.md).
 
+---
+
+## Benchmarks & Verification Suite
+
+Clarity includes an automated performance, latency, and reliability test suite measuring pipeline stage durations, backpressure boundaries, valid code generation rates, and cache speedups:
+
+```bash
+# Run the complete test & benchmark suite (Go pipeline + Python agent + Resume metrics):
+./scripts/run_benchmarks.sh
+
+# Or run individual verification suites:
+# 1. Pipeline stage latency, TTFE decoupling, queue backpressure, and caching (Go):
+cd server && go test -v -run='TestPipeline|TestXYZ' ./internal/jobs
+
+# 2. Coordinator 100-client polling throughput & path traversal security (Go):
+cd server && go test -v -run='TestConcurrentPollingLoad|TestWorkDirBoundaryIsolationFuzzing' ./internal/api
+
+# 3. Valid Manim code generation, error repair recovery, and latency tests (Python):
+cd agent && .venv/bin/pytest -v tests/test_resume_metrics.py -s
+```
+
+---
+
 For the full technical spec, see [docs/FRD.md](docs/FRD.md) (behavior) and [docs/API.md](docs/API.md) (HTTP contracts).
+

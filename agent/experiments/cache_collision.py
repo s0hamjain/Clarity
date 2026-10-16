@@ -11,29 +11,10 @@ import httpx
 
 
 def normalize(text: str) -> str:
-    """FRD §12 normalization for cache key problem text."""
+    """FRD §12 and server/internal/cache/key.go exact normalization for cache key problem text."""
     if not text:
         return ""
-    # Convert Windows line endings to unix \n
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Convert tabs to 4 spaces
-    text = text.replace("\t", "    ")
-    # Split into lines and strip trailing whitespace per line
-    lines = [line.rstrip() for line in text.split("\n")]
-    # Collapse multiple consecutive blank lines into single blank line
-    collapsed_lines = []
-    prev_blank = False
-    for line in lines:
-        is_blank = (line.strip() == "")
-        if is_blank:
-            if not prev_blank:
-                collapsed_lines.append("")
-                prev_blank = True
-        else:
-            collapsed_lines.append(line.lower())
-            prev_blank = False
-    # Join and strip outer whitespace
-    return "\n".join(collapsed_lines).strip()
+    return " ".join(text.lower().split())
 
 
 def run_collision_experiment(image_paths: list[Path], agent_url: str = "http://localhost:8000"):
@@ -97,7 +78,7 @@ def main():
         print("Usage: python experiments/cache_collision.py img1.png img2.png ... img6.png")
         return
 
-    run_collision_experiment(args.images, args.agent-url)
+    run_collision_experiment(args.images, args.agent_url)
 
 
 if __name__ == "__main__":

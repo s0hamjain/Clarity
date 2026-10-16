@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--agent-url", default="http://localhost:8000", help="Agent service URL")
     args = parser.parse_args()
 
-    run_ablation_experiment(args.agent-url)
+    run_ablation_experiment(args.agent_url)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,10 @@
 SHELL := /bin/bash
 IMAGE := manim-worker
 
-.PHONY: smoke render-test
+.PHONY: smoke render-test benchmarks
+
+benchmarks:
+	./scripts/run_benchmarks.sh
 
 # Builds manim-worker if it doesn't exist, runs the SETUP.md §6.2 scene
 # through it, and prints PASS/FAIL. The single command anyone — not just P2 —
